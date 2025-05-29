@@ -3497,10 +3497,6 @@ ORDEN DE EJECUCIÓN:
 # ========================================
 
 if __name__ == "__main__":
-    if IS_RAILWAY:
-        # En Railway: usar puerto dinámico
-        port = int(os.getenv('PORT', 8501))
-        st.set_option('server.port', port)
-        st.set_option('server.address', '0.0.0.0')
+
     main()
 
