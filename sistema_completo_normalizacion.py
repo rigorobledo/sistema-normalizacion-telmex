@@ -2688,7 +2688,7 @@ def main():
     st.markdown("""
     <div class="main-header">
         <h1>🏠 Red Nacional</h1>
-        <p>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios | AS400 ↔ PostgreSQL | Automatización Completa</p>
+        <p>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios | AS400 ↔ PostgreSQL</p>
     </div>
     """, unsafe_allow_html=True)
     

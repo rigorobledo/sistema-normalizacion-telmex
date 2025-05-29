@@ -24,17 +24,174 @@ import re
 from fuzzywuzzy import fuzz, process
 import unicodedata
 
+import os
+from dotenv import load_dotenv
+
+# Cargar variables de entorno
+load_dotenv()
+
+# Detectar ambiente
+IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
+IS_LOCAL = not IS_RAILWAY
+
+# ========================================
+# PASO 1: AGREGAR DICCIONARIOS INTELIGENTES
+# ========================================
+
+# INSTRUCCIONES:
+# 1. Agregar este código AL INICIO de tu archivo Python, después de los imports
+# 2. Luego agregar el método inicializar_diccionarios() a la clase SistemaNormalizacion
+# 3. Llamar el método en __init__()
+
+# ========================================
+# DICCIONARIOS DE CONOCIMIENTO (AGREGAR AL INICIO DEL ARCHIVO)
+# ========================================
+
+# Diccionario de abreviaciones comunes en México
+ABREVIACIONES_MEXICO = {
+    # Estados más comunes
+    'B.C.': 'BAJA CALIFORNIA',
+    'B.C.S.': 'BAJA CALIFORNIA SUR',
+    'CDMX': 'CIUDAD DE MEXICO',
+    'D.F.': 'CIUDAD DE MEXICO',
+    'DISTRITO FEDERAL': 'CIUDAD DE MEXICO',
+    'EDO MEX': 'ESTADO DE MEXICO',
+    'EDO. MEX.': 'ESTADO DE MEXICO',
+    'MEX.': 'ESTADO DE MEXICO',
+    'N.L.': 'NUEVO LEON',
+    'Q.R.': 'QUINTANA ROO',
+    'Q. ROO': 'QUINTANA ROO',
+    'S.L.P.': 'SAN LUIS POTOSI',
+    
+    # Estados con abreviaciones típicas
+    'COAH.': 'COAHUILA',
+    'CHIH.': 'CHIHUAHUA',
+    'CHIS.': 'CHIAPAS',
+    'GTO.': 'GUANAJUATO',
+    'GRO.': 'GUERRERO',
+    'HGO.': 'HIDALGO',
+    'JAL.': 'JALISCO',
+    'MICH.': 'MICHOACAN',
+    'MOR.': 'MORELOS',
+    'NAY.': 'NAYARIT',
+    'OAX.': 'OAXACA',
+    'PUE.': 'PUEBLA',
+    'QRO.': 'QUERETARO',
+    'SIN.': 'SINALOA',
+    'SON.': 'SONORA',
+    'TAB.': 'TABASCO',
+    'TAMS.': 'TAMAULIPAS',
+    'TLAX.': 'TLAXCALA',
+    'VER.': 'VERACRUZ',
+    'YUC.': 'YUCATAN',
+    'ZAC.': 'ZACATECAS',
+    
+    # Ciudades comunes
+    'CD JUAREZ': 'CIUDAD JUAREZ',
+    'CD. JUAREZ': 'CIUDAD JUAREZ',
+    'GDLE': 'GUADALAJARA',
+    'GDL': 'GUADALAJARA',
+    'MTY': 'MONTERREY',
+    
+    # Prefijos y títulos comunes
+    'CD.': 'CIUDAD',
+    'STA.': 'SANTA',
+    'STO.': 'SANTO',
+    'S.': 'SAN',
+    'GRAL.': 'GENERAL',
+    'PRES.': 'PRESIDENTE',
+    'PROF.': 'PROFESOR',
+    'DR.': 'DOCTOR',
+    'ING.': 'INGENIERO',
+    'LIC.': 'LICENCIADO',
+    'COL.': 'COLONIA',
+    'FRACC.': 'FRACCIONAMIENTO',
+    'DELEG.': 'DELEGACION',
+    'MPIO.': 'MUNICIPIO'
+}
+
+# Correcciones de errores tipográficos comunes
+CORRECCIONES_TIPOGRAFICAS = {
+    # Números por letras (muy común en OCR y digitación)
+    '0': 'O',  # Cero por O
+    '1': 'I',  # Uno por I
+    '3': 'E',  # Tres por E
+    '5': 'S',  # Cinco por S
+    
+    # Letras similares
+    'PH': 'F',
+    'QU': 'C',
+    'K': 'C',
+    'W': 'V',
+    'Y': 'I'
+}
+
+# Sinónimos y equivalencias
+SINONIMOS_MEXICO = {
+    'CENTRO': ['CENTRO HISTORICO', 'PRIMER CUADRO', 'ZOCALO', 'CENTRO HIST'],
+    'INDUSTRIAL': ['ZONA INDUSTRIAL', 'PARQUE INDUSTRIAL', 'Z INDUSTRIAL'],
+    'RESIDENCIAL': ['ZONA RESIDENCIAL', 'FRACCIONAMIENTO', 'FRACC'],
+    'POPULAR': ['COLONIA POPULAR', 'BARRIO POPULAR', 'COL POPULAR'],
+    'AMPLIACION': ['AMPL', 'AMPL.', 'AMPLIAC', 'AMPLIAC'],
+    'FRACCIONAMIENTO': ['FRACC', 'FRACC.', 'FRAC', 'FRACCION'],
+    'UNIDAD': ['UNID', 'U', 'CONJUNTO', 'CONJ'],
+    'PRIVADA': ['PRIV', 'PRIV.', 'PRIVADO', 'PRIV'],
+    'COLONIA': ['COL', 'COL.', 'BARRIO'],
+    'DELEGACION': ['DELEG', 'DELEG.', 'DELEGAC']
+}
+
+# Patrones específicos para domicilios mexicanos
+PATRONES_LIMPIEZA_MEXICO = [
+    # Remover prefijos innecesarios comunes
+    (r'^(LA |EL |LOS |LAS )', ''),
+    (r'^(DE LA |DEL |DE LOS |DE LAS )', ''),
+    
+    # Normalizar espacios múltiples
+    (r'\s+', ' '),
+    
+    # Remover caracteres especiales comunes en domicilios
+    (r'[#°ªº]', ''),
+    (r'[-_]', ' '),
+    (r'[(){}[\]]', ''),
+    
+    # Números romanos comunes a números arábigos
+    (r'\bI\b', '1'),
+    (r'\bII\b', '2'),
+    (r'\bIII\b', '3'),
+    (r'\bIV\b', '4'),
+    (r'\bV\b', '5'),
+    (r'\bVI\b', '6'),
+    (r'\bVII\b', '7'),
+    (r'\bVIII\b', '8'),
+    (r'\bIX\b', '9'),
+    (r'\bX\b', '10'),
+    
+    # Normalizar separadores
+    (r'[/\\|]', ' '),
+    
+    # Limpiar múltiples puntos
+    (r'\.{2,}', '.')
+]
+
 # ========================================
 # 1. CONFIGURACIÓN AVANZADA
 # ========================================
 
-DATABASE_CONFIG = {
-    'host': 'localhost',
-    'port': 5432,
-    'database': 'normalizacion_domicilios',
-    'user': 'postgres',
-    'password': 'admin123'
-}
+# Configuración adaptativa de base de datos
+if IS_RAILWAY:
+    # En Railway: usar DATABASE_URL
+    DATABASE_URL = os.getenv('DATABASE_URL')
+    # Railway da la URL completa, la parseamos después
+    DATABASE_CONFIG = {'url': DATABASE_URL}
+else:
+    # Local: usar configuración original
+    DATABASE_CONFIG = {
+        'host': os.getenv('DB_HOST', 'localhost'),
+        'port': int(os.getenv('DB_PORT', 5432)),
+        'database': os.getenv('DB_NAME', 'normalizacion_domicilios'),
+        'user': os.getenv('DB_USER', 'postgres'),
+        'password': os.getenv('DB_PASSWORD', 'admin123')
+    }
 
 # Configuración de página
 st.set_page_config(
@@ -116,11 +273,21 @@ class SistemaNormalizacion:
     def __init__(self):
         self.engine = self.crear_conexion()
         self.crear_tablas_sistema()
+        self.inicializar_diccionarios_inteligentes()
+        self.inicializar_patrones_limpieza()
         
     def crear_conexion(self):
-        """Crear conexión a PostgreSQL"""
+        """Crear conexión a PostgreSQL - Versión adaptativa"""
         try:
-            engine = create_engine(f"postgresql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}/{DATABASE_CONFIG['database']}")
+            if IS_RAILWAY and 'url' in DATABASE_CONFIG:
+                # En Railway: usar URL directa
+                engine = create_engine(DATABASE_CONFIG['url'])
+            else:
+                # Local: usar configuración tradicional
+                config = DATABASE_CONFIG
+                connection_string = f"postgresql://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['database']}"
+                engine = create_engine(connection_string)
+            
             return engine
         except Exception as e:
             st.error(f"Error de conexión: {e}")
@@ -369,10 +536,10 @@ class SistemaNormalizacion:
         """Normalizar un registro individual usando los algoritmos de IA"""
         
         # Limpiar texto
-        texto_limpio = self.limpiar_texto(texto_original)
+        texto_limpio = self.limpiar_texto_inteligente(texto_original, tipo_catalogo)
         
         # Buscar en referencias
-        referencia_encontrada = self.buscar_en_referencias(texto_limpio, tipo_catalogo)
+        referencia_encontrada = self.buscar_en_referencias_CORREGIDO(texto_limpio, tipo_catalogo)
         
         resultado = {
             'tipo_catalogo': tipo_catalogo,
@@ -403,24 +570,52 @@ class SistemaNormalizacion:
         
         return resultado
     
-    def limpiar_texto(self, texto):
-        """Limpiar texto para normalización"""
+    def limpiar_texto_inteligente(self, texto, tipo_catalogo=None):
+        """Limpieza inteligente que reemplaza al método limpiar_texto() original"""
+        
         if not isinstance(texto, str):
             return ""
         
-        # Convertir a mayúsculas
-        texto = texto.upper().strip()
+        print(f"🧠 Limpieza inteligente: '{texto}' (tipo: {tipo_catalogo})")
         
-        # Quitar acentos
-        texto = unicodedata.normalize('NFD', texto)
-        texto = ''.join(char for char in texto if unicodedata.category(char) != 'Mn')
+        # PASO 1: Conversión básica
+        texto_procesado = texto.upper().strip()
+        print(f"   Mayúsculas: '{texto_procesado}'")
         
-        # Limpiar caracteres especiales
-        texto = re.sub(r'[^\w\s]', ' ', texto)
-        texto = re.sub(r'\s+', ' ', texto)
-        texto = texto.strip()
+        # PASO 2: Expandir abreviaciones ANTES de limpiar
+        if hasattr(self, 'expandir_abreviaciones_inteligente'):
+            texto_expandido = self.expandir_abreviaciones_inteligente(texto_procesado)
+            if texto_expandido != texto_procesado:
+                print(f"   Expandido: '{texto_expandido}'")
+                texto_procesado = texto_expandido
         
-        return texto
+        # PASO 3: Correcciones tipográficas ANTES de limpiar
+        if hasattr(self, 'corregir_errores_tipograficos'):
+            texto_corregido = self.corregir_errores_tipograficos(texto_procesado)
+            if texto_corregido != texto_procesado:
+                print(f"   Corregido: '{texto_corregido}'")
+                texto_procesado = texto_corregido
+        
+        # PASO 4: Aplicar patrones específicos de limpieza
+        for patron, reemplazo in PATRONES_LIMPIEZA_MEXICO:
+            texto_anterior = texto_procesado
+            texto_procesado = re.sub(patron, reemplazo, texto_procesado)
+            if texto_procesado != texto_anterior:
+                print(f"   Patrón aplicado: '{texto_anterior}' → '{texto_procesado}'")
+        
+        # PASO 5: Quitar acentos (proceso original)
+        texto_sin_acentos = unicodedata.normalize('NFD', texto_procesado)
+        texto_sin_acentos = ''.join(char for char in texto_sin_acentos if unicodedata.category(char) != 'Mn')
+        
+        # PASO 6: Limpiar caracteres especiales (proceso original)  
+        texto_limpio = re.sub(r'[^\w\s]', ' ', texto_sin_acentos)
+        texto_limpio = re.sub(r'\s+', ' ', texto_limpio).strip()
+        
+        # PASO 7: Limpieza final específica por tipo de catálogo
+        texto_final = self.limpieza_especifica_por_tipo(texto_limpio, tipo_catalogo)
+        
+        print(f"   Resultado final: '{texto_final}'")
+        return texto_final
     
     def buscar_en_referencias(self, texto_limpio, tipo_catalogo):
         """Buscar coincidencias en las referencias usando IA"""
@@ -446,7 +641,7 @@ class SistemaNormalizacion:
             
             # Buscar coincidencia exacta
             for ref in referencias:
-                nombre_ref_limpio = self.limpiar_texto(ref['nombre_oficial'])
+                nombre_ref_limpio = self.limpiar_texto_inteligente(ref['nombre_oficial'])
                 if texto_limpio == nombre_ref_limpio:
                     return {
                         **ref,
@@ -473,6 +668,78 @@ class SistemaNormalizacion:
         except Exception as e:
             print(f"Error buscando referencias: {e}")
             return None
+        
+    def buscar_en_referencias_CORREGIDO(self, texto_limpio, tipo_catalogo):
+        """
+        Buscar coincidencias en las referencias usando IA - VERSIÓN CORREGIDA
+        
+        REEMPLAZAR EL MÉTODO EXISTENTE buscar_en_referencias() POR ESTE
+        """
+        
+        print(f"🔍 Buscando: '{texto_limpio}' en {tipo_catalogo}")
+        
+        try:
+            with self.engine.connect() as conn:
+                # Obtener referencias del tipo correspondiente
+                result = conn.execute(text("""
+                    SELECT * FROM referencias_normalizacion 
+                    WHERE tipo_catalogo = :tipo AND activo = true
+                """), {'tipo': tipo_catalogo})
+                
+                referencias = []
+                for row in result:
+                    referencias.append(dict(row._mapping))
+            
+            if not referencias:
+                print(f"   ❌ No hay referencias para {tipo_catalogo}")
+                return None
+            
+            print(f"   📊 Encontradas {len(referencias)} referencias para {tipo_catalogo}")
+            
+            # Buscar coincidencia exacta
+            for ref in referencias:
+                nombre_ref_limpio = ref['nombre_oficial'].upper().strip()
+                if texto_limpio == nombre_ref_limpio:
+                    print(f"   ✅ EXACTO: '{texto_limpio}' = '{nombre_ref_limpio}'")
+                    return {
+                        **ref,
+                        'metodo': 'EXACTO',
+                        'confianza': 1.0
+                    }
+            
+            # Buscar con fuzzy matching - CORREGIDO
+            nombres_referencias = [ref['nombre_oficial'].upper().strip() for ref in referencias]
+            
+            print(f"   🔍 Fuzzy: comparando '{texto_limpio}' con {len(nombres_referencias)} nombres")
+            
+            # Importar aquí para evitar problemas de importación
+            from fuzzywuzzy import fuzz, process
+            
+            # Probar diferentes scorers
+            mejor_fuzzy = process.extractOne(texto_limpio, nombres_referencias, scorer=fuzz.token_sort_ratio)
+            
+            print(f"   🎯 Mejor fuzzy: {mejor_fuzzy}")
+            
+            if mejor_fuzzy and mejor_fuzzy[1] >= 60:  # Umbral mínimo 60%
+                # Encontrar la referencia correspondiente
+                for ref in referencias:
+                    nombre_ref = ref['nombre_oficial'].upper().strip()
+                    if nombre_ref == mejor_fuzzy[0]:
+                        print(f"   ✅ FUZZY: '{texto_limpio}' → '{nombre_ref}' ({mejor_fuzzy[1]}%)")
+                        return {
+                            **ref,
+                            'metodo': 'FUZZY_ALTO' if mejor_fuzzy[1] >= 80 else 'FUZZY_BAJO',
+                            'confianza': mejor_fuzzy[1] / 100.0
+                        }
+            
+            print(f"   ❌ Sin coincidencias para '{texto_limpio}' (mejor score: {mejor_fuzzy[1] if mejor_fuzzy else 0}%)")
+            return None
+            
+        except Exception as e:
+            print(f"   ❌ Error buscando referencias: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def guardar_resultados(self, resultados):
         """Guardar resultados de normalización en la base de datos"""
@@ -494,7 +761,449 @@ class SistemaNormalizacion:
             st.session_state.progreso_archivos = {}
         st.session_state.progreso_archivos[id_archivo] = progreso
 
+    def inicializar_diccionarios_inteligentes(self):
+        """
+        Método para agregar a la clase SistemaNormalizacion
+        AGREGAR ESTE MÉTODO A TU CLASE EXISTENTE
+        """
+        
+        print("🧠 Inicializando diccionarios inteligentes...")
+        
+        # Cargar diccionarios globales en la instancia
+        self.abreviaciones = ABREVIACIONES_MEXICO.copy()
+        self.correcciones = CORRECCIONES_TIPOGRAFICAS.copy()
+        self.sinonimos = SINONIMOS_MEXICO.copy()
+        
+        print(f"   ✅ {len(self.abreviaciones)} abreviaciones cargadas")
+        print(f"   ✅ {len(self.correcciones)} correcciones cargadas")
+        print(f"   ✅ {len(self.sinonimos)} grupos de sinónimos cargados")
+        
+        # Crear índice inverso de sinónimos para búsqueda rápida
+        self.indice_sinonimos = {}
+        for principal, variaciones in self.sinonimos.items():
+            for variacion in variaciones:
+                self.indice_sinonimos[variacion] = principal
+        
+        print(f"   ✅ {len(self.indice_sinonimos)} sinónimos indexados")
 
+
+    def expandir_abreviaciones_inteligente(self, texto):
+        """
+        Método para agregar a la clase SistemaNormalizacion
+        AGREGAR ESTE MÉTODO A TU CLASE EXISTENTE
+        """
+        
+        if not hasattr(self, 'abreviaciones'):
+            return texto  # Si no están inicializados los diccionarios, devolver original
+        
+        texto_expandido = texto.upper().strip()
+        expansiones_realizadas = []
+        
+        # Expandir abreviaciones exactas
+        for abrev, completo in self.abreviaciones.items():
+            if abrev in texto_expandido:
+                texto_expandido = texto_expandido.replace(abrev, completo)
+                expansiones_realizadas.append(f"{abrev} → {completo}")
+        
+        # Expandir sinónimos
+        palabras = texto_expandido.split()
+        palabras_expandidas = []
+        
+        for palabra in palabras:
+            if palabra in self.indice_sinonimos:
+                palabra_principal = self.indice_sinonimos[palabra]
+                palabras_expandidas.append(palabra_principal)
+                expansiones_realizadas.append(f"{palabra} → {palabra_principal}")
+            else:
+                palabras_expandidas.append(palabra)
+        
+        resultado = ' '.join(palabras_expandidas)
+        
+        if expansiones_realizadas:
+            print(f"   🔤 Expansiones: {', '.join(expansiones_realizadas)}")
+        
+        return resultado
+
+
+    def corregir_errores_tipograficos(self, texto):
+        """
+        Método para agregar a la clase SistemaNormalizacion
+        AGREGAR ESTE MÉTODO A TU CLASE EXISTENTE
+        """
+        
+        if not hasattr(self, 'correcciones'):
+            return texto
+        
+        texto_corregido = texto
+        correcciones_realizadas = []
+        
+        # Aplicar correcciones solo en contexto de palabras
+        for incorrecto, correcto in self.correcciones.items():
+            # Buscar el carácter incorrecto dentro de palabras
+            patron = rf'\b\w*{re.escape(incorrecto)}\w*\b'
+            coincidencias = re.findall(patron, texto_corregido)
+            
+            for coincidencia in coincidencias:
+                if incorrecto in coincidencia:
+                    corregida = coincidencia.replace(incorrecto, correcto)
+                    texto_corregido = texto_corregido.replace(coincidencia, corregida)
+                    correcciones_realizadas.append(f"{coincidencia} → {corregida}")
+        
+        if correcciones_realizadas:
+            print(f"   ✏️ Correcciones: {', '.join(correcciones_realizadas)}")
+        
+        return texto_corregido
+
+    def limpieza_especifica_por_tipo(self, texto, tipo_catalogo):
+        """
+        Limpieza específica según el tipo de catálogo
+        AGREGAR ESTE MÉTODO NUEVO A LA CLASE
+        """
+        
+        if not tipo_catalogo:
+            return texto
+        
+        texto_especifico = texto
+        
+        if tipo_catalogo == 'ESTADOS':
+            # Estados: más estricto, nombres generalmente fijos
+            # Remover palabras innecesarias comunes
+            palabras_innecesarias = ['ESTADO', 'DE', 'EL', 'LA', 'LOS', 'LAS']
+            palabras = texto_especifico.split()
+            palabras_filtradas = [p for p in palabras if p not in palabras_innecesarias or len(palabras) <= 2]
+            texto_especifico = ' '.join(palabras_filtradas)
+            
+        elif tipo_catalogo == 'CIUDADES':
+            # Ciudades: normalizar prefijos comunes
+            if texto_especifico.startswith('CIUDAD '):
+                texto_especifico = texto_especifico  # Mantener CIUDAD
+            elif texto_especifico.startswith('CD '):
+                texto_especifico = 'CIUDAD ' + texto_especifico[3:]
+                
+        elif tipo_catalogo == 'MUNICIPIOS':
+            # Municipios: similar a ciudades pero más flexible
+            if texto_especifico.startswith('MUNICIPIO '):
+                texto_especifico = texto_especifico[10:]  # Remover prefijo
+            elif texto_especifico.startswith('MPIO '):
+                texto_especifico = texto_especifico[5:]  # Remover prefijo
+                
+        elif tipo_catalogo == 'ALCALDIAS':
+            # Alcaldías: nombres generalmente fijos de CDMX
+            pass  # Sin cambios específicos
+            
+        elif tipo_catalogo == 'COLONIAS':
+            # Colonias: la más flexible, muchas variaciones
+            # Remover prefijos comunes de colonias
+            prefijos_colonia = ['COLONIA ', 'COL ', 'BARRIO ', 'FRACCIONAMIENTO ', 'FRACC ']
+            for prefijo in prefijos_colonia:
+                if texto_especifico.startswith(prefijo):
+                    texto_especifico = texto_especifico[len(prefijo):]
+                    break
+        
+        if texto_especifico != texto:
+            print(f"   Específico {tipo_catalogo}: '{texto}' → '{texto_especifico}'")
+        
+        return texto_especifico
+
+    def aplicar_patrones_limpieza_inteligente(self, texto):
+        """
+        Aplicar patrones de limpieza usando expresiones regulares compiladas
+        AGREGAR ESTE MÉTODO A LA CLASE SistemaNormalizacion
+        """
+        
+        if not hasattr(self, 'patrones_compilados'):
+            # Si no están compilados, compilar ahora
+            self.inicializar_patrones_limpieza()
+        
+        texto_procesado = texto
+        
+        for regex_compilado, reemplazo in self.patrones_compilados:
+            texto_anterior = texto_procesado
+            try:
+                texto_procesado = regex_compilado.sub(reemplazo, texto_procesado)
+                if texto_procesado != texto_anterior:
+                    print(f"   Patrón '{regex_compilado.pattern}': '{texto_anterior}' → '{texto_procesado}'")
+            except Exception as e:
+                print(f"   ⚠️ Error aplicando patrón: {e}")
+                continue
+        
+        return texto_procesado      
+
+
+    # ========================================
+    # MÉTODO PARA AGREGAR A LA CLASE
+    # ========================================
+
+    def inicializar_patrones_limpieza(self):
+        """
+        Inicializar patrones de limpieza
+        AGREGAR ESTE MÉTODO A LA CLASE
+        """
+        
+        # Cargar patrones globales en la instancia
+        self.patrones_limpieza = PATRONES_LIMPIEZA_MEXICO.copy()
+        
+        print(f"   ✅ {len(self.patrones_limpieza)} patrones de limpieza cargados")
+        
+        # Compilar expresiones regulares para mejor rendimiento
+        self.patrones_compilados = []
+        for patron, reemplazo in self.patrones_limpieza:
+            try:
+                regex_compilado = re.compile(patron)
+                self.patrones_compilados.append((regex_compilado, reemplazo))
+            except re.error as e:
+                print(f"   ⚠️ Error compilando patrón '{patron}': {e}")
+        
+
+
+# ========================================
+# FUNCIÓN DE PRUEBA
+# ========================================
+
+def probar_diccionarios_inteligentes():
+    """
+    Función de prueba - AGREGAR AL FINAL DE TU ARCHIVO
+    """
+    
+    print("🧪 PROBANDO DICCIONARIOS INTELIGENTES")
+    print("=" * 50)
+    
+    # Simular la clase con los nuevos métodos
+    class PruebaSistema:
+        def __init__(self):
+            self.abreviaciones = ABREVIACIONES_MEXICO
+            self.correcciones = CORRECCIONES_TIPOGRAFICAS
+            self.sinonimos = SINONIMOS_MEXICO
+            self.indice_sinonimos = {}
+            for principal, variaciones in self.sinonimos.items():
+                for variacion in variaciones:
+                    self.indice_sinonimos[variacion] = principal
+    
+    sistema = PruebaSistema()
+    
+    # Casos de prueba
+    casos_prueba = [
+        "B.C.",
+        "CDMX", 
+        "DOCT0RES",
+        "STA MARIA",
+        "CENTRO HISTORICO",
+        "FRACC RESIDENCIAL",
+        "CD. JUAREZ",
+        "EDO MEX"
+    ]
+    
+    print("Casos de prueba:")
+    for caso in casos_prueba:
+        print(f"\nOriginal: '{caso}'")
+        
+        # Simular expandir_abreviaciones_inteligente
+        expandido = caso.upper()
+        for abrev, completo in sistema.abreviaciones.items():
+            if abrev in expandido:
+                expandido = expandido.replace(abrev, completo)
+                print(f"   Expandido: '{expandido}'")
+        
+        # Simular corregir_errores_tipograficos
+        corregido = expandido
+        for incorrecto, correcto in sistema.correcciones.items():
+            if incorrecto in corregido:
+                corregido = corregido.replace(incorrecto, correcto)
+                print(f"   Corregido: '{corregido}'")
+
+
+# ========================================
+# VERIFICACIÓN PASO 1
+# ========================================
+
+def verificar_paso1():
+    """
+    Función para verificar que el Paso 1 está implementado correctamente
+    EJECUTAR DESPUÉS DE IMPLEMENTAR
+    """
+    
+    print("🔍 VERIFICANDO PASO 1...")
+    
+    # Verificar que los diccionarios existen
+    try:
+        assert len(ABREVIACIONES_MEXICO) > 30, "Faltan abreviaciones"
+        assert len(CORRECCIONES_TIPOGRAFICAS) > 3, "Faltan correcciones"
+        assert len(SINONIMOS_MEXICO) > 5, "Faltan sinónimos"
+        print("✅ Diccionarios definidos correctamente")
+    except Exception as e:
+        print(f"❌ Error en diccionarios: {e}")
+        return False
+    
+    # Verificar casos específicos
+    casos_verificacion = [
+        ('B.C.' in ABREVIACIONES_MEXICO, "Abreviación B.C."),
+        ('CDMX' in ABREVIACIONES_MEXICO, "Abreviación CDMX"),
+        ('0' in CORRECCIONES_TIPOGRAFICAS, "Corrección 0→O"),
+        ('CENTRO' in SINONIMOS_MEXICO, "Sinónimos de CENTRO")
+    ]
+    
+    for verif, descripcion in casos_verificacion:
+        if verif:
+            print(f"✅ {descripcion}")
+        else:
+            print(f"❌ {descripcion}")
+            return False
+    
+    print("\n🎉 PASO 1 VERIFICADO CORRECTAMENTE")
+    print("Proceder al Paso 2: Mejorar limpieza de texto")
+    return True
+# ========================================
+# FUNCIÓN DE PRUEBA ESPECÍFICA PASO 2
+# ========================================
+
+def probar_limpieza_inteligente():
+    """
+    Probar la nueva limpieza inteligente
+    AGREGAR AL FINAL DEL ARCHIVO (o ejecutar por separado)
+    """
+    
+    print("🧪 PROBANDO LIMPIEZA INTELIGENTE - PASO 2")
+    print("=" * 50)
+    
+    # Casos de prueba específicos para cada tipo
+    casos_prueba = {
+        'ESTADOS': [
+            "b.c.",
+            "CDMX",
+            "Estado de México", 
+            "N.L.",
+            "distrito federal"
+        ],
+        'CIUDADES': [
+            "cd. juárez",
+            "guadalajara",
+            "CIUDAD DE MÉXICO",
+            "gdle"
+        ],
+        'MUNICIPIOS': [
+            "mpio. guadalajara",
+            "MUNICIPIO TIJUANA",
+            "benito juárez"
+        ],
+        'COLONIAS': [
+            "col. centro",
+            "DOCT0RES",
+            "STA. MARÍA LA RIBERA",
+            "fracc. residencial",
+            "centro histórico"
+        ]
+    }
+    
+    try:
+        sistema = SistemaNormalizacion()
+        
+        for tipo, casos in casos_prueba.items():
+            print(f"\n📋 TIPO: {tipo}")
+            print("-" * 30)
+            
+            for caso in casos:
+                print(f"\nOriginal: '{caso}'")
+                
+                if hasattr(sistema, 'limpiar_texto_inteligente'):
+                    resultado = sistema.limpiar_texto_inteligente(caso, tipo)
+                    print(f"Resultado: '{resultado}'")
+                else:
+                    print("❌ Método limpiar_texto_inteligente no encontrado")
+        
+        print(f"\n🎉 PRUEBA COMPLETADA")
+        
+    except Exception as e:
+        print(f"❌ Error en prueba: {e}")
+
+
+
+
+# ========================================
+# FUNCIÓN DE COMPARACIÓN ANTES/DESPUÉS
+# ========================================
+
+def comparar_limpieza_antes_despues():
+    """
+    Comparar limpieza original vs inteligente
+    """
+    
+    print("🔍 COMPARACIÓN ANTES/DESPUÉS")
+    print("=" * 40)
+    
+    casos_comparacion = [
+        "B.C.",
+        "DOCT0RES", 
+        "STA. MARÍA",
+        "CENTRO HISTÓRICO",
+        "CD. JUÁREZ"
+    ]
+    
+    sistema = SistemaNormalizacion()
+    
+    for caso in casos_comparacion:
+        print(f"\nTexto: '{caso}'")
+        
+        # Método original (si existe)
+        if hasattr(sistema, 'limpiar_texto_original'):
+            original = sistema.limpiar_texto_original(caso)
+            print(f"  Original: '{original}'")
+        
+        # Método inteligente
+        if hasattr(sistema, 'limpiar_texto_inteligente'):
+            inteligente = sistema.limpiar_texto_inteligente(caso, 'COLONIAS')
+            print(f"  Inteligente: '{inteligente}'")
+        
+        print("  " + "="*30)
+
+
+# ========================================
+# VERIFICACIÓN PASO 2
+# ========================================
+
+def verificar_paso2():
+    """
+    Verificar que el Paso 2 está implementado correctamente
+    """
+    
+    print("🔍 VERIFICANDO PASO 2...")
+    
+    try:
+        sistema = SistemaNormalizacion()
+        
+        # Verificar que los nuevos métodos existen
+        metodos_requeridos = [
+            'limpiar_texto_inteligente',
+            'limpieza_especifica_por_tipo',
+            'inicializar_patrones_limpieza'
+        ]
+        
+        for metodo in metodos_requeridos:
+            if hasattr(sistema, metodo):
+                print(f"✅ Método {metodo} disponible")
+            else:
+                print(f"❌ Método {metodo} falta")
+                return False
+        
+        # Verificar que los patrones se cargaron
+        if hasattr(sistema, 'patrones_limpieza'):
+            print(f"✅ {len(sistema.patrones_limpieza)} patrones de limpieza cargados")
+        else:
+            print(f"❌ Patrones de limpieza no cargados")
+            return False
+        
+        # Probar caso simple
+        resultado = sistema.limpiar_texto_inteligente("B.C.", "ESTADOS")
+        if resultado == "BAJA CALIFORNIA":
+            print("✅ Limpieza inteligente funcionando correctamente")
+        else:
+            print(f"⚠️ Resultado inesperado: '{resultado}' (esperado: 'BAJA CALIFORNIA')")
+        
+        print("\n🎉 PASO 2 VERIFICADO CORRECTAMENTE")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error en verificación: {e}")
+        return False
 
 # ========================================
 # FUNCIÓN AUXILIAR MEJORADA (FUERA DE LA CLASE)
@@ -619,10 +1328,10 @@ A,00003,OBRERA"""
         """Normalizar un registro individual usando los algoritmos de IA"""
         
         # Limpiar texto
-        texto_limpio = self.limpiar_texto(texto_original)
+        texto_limpio = self.limpiar_texto_inteligente(texto_original)
         
         # Buscar en referencias
-        referencia_encontrada = self.buscar_en_referencias(texto_limpio, tipo_catalogo)
+        referencia_encontrada = self.buscar_en_referencias_CORREGIDO(texto_limpio, tipo_catalogo)
         
         resultado = {
             'tipo_catalogo': tipo_catalogo,
@@ -653,24 +1362,55 @@ A,00003,OBRERA"""
         
         return resultado
     
-    def limpiar_texto(self, texto):
-        """Limpiar texto para normalización"""
+    def limpiar_texto(self, texto, tipo_catalogo=None):
+        """
+        Limpieza inteligente que reemplaza al método limpiar_texto() original
+        REEMPLAZAR EL MÉTODO EXISTENTE limpiar_texto() POR ESTE
+        """
+        
         if not isinstance(texto, str):
             return ""
         
-        # Convertir a mayúsculas
-        texto = texto.upper().strip()
+        print(f"🧠 Limpieza inteligente: '{texto}' (tipo: {tipo_catalogo})")
         
-        # Quitar acentos
-        texto = unicodedata.normalize('NFD', texto)
-        texto = ''.join(char for char in texto if unicodedata.category(char) != 'Mn')
+        # PASO 1: Conversión básica
+        texto_procesado = texto.upper().strip()
+        print(f"   Mayúsculas: '{texto_procesado}'")
         
-        # Limpiar caracteres especiales
-        texto = re.sub(r'[^\w\s]', ' ', texto)
-        texto = re.sub(r'\s+', ' ', texto)
-        texto = texto.strip()
+        # PASO 2: Expandir abreviaciones ANTES de limpiar (usa diccionarios Paso 1)
+        if hasattr(self, 'expandir_abreviaciones_inteligente'):
+            texto_expandido = self.expandir_abreviaciones_inteligente(texto_procesado)
+            if texto_expandido != texto_procesado:
+                print(f"   Expandido: '{texto_expandido}'")
+                texto_procesado = texto_expandido
         
-        return texto
+        # PASO 3: Correcciones tipográficas ANTES de limpiar (usa diccionarios Paso 1)
+        if hasattr(self, 'corregir_errores_tipograficos'):
+            texto_corregido = self.corregir_errores_tipograficos(texto_procesado)
+            if texto_corregido != texto_procesado:
+                print(f"   Corregido: '{texto_corregido}'")
+                texto_procesado = texto_corregido
+        
+        # PASO 4: Aplicar patrones específicos de limpieza
+        for patron, reemplazo in PATRONES_LIMPIEZA_MEXICO:
+            texto_anterior = texto_procesado
+            texto_procesado = re.sub(patron, reemplazo, texto_procesado)
+            if texto_procesado != texto_anterior:
+                print(f"   Patrón aplicado: '{texto_anterior}' → '{texto_procesado}'")
+        
+        # PASO 5: Quitar acentos (proceso original)
+        texto_sin_acentos = unicodedata.normalize('NFD', texto_procesado)
+        texto_sin_acentos = ''.join(char for char in texto_sin_acentos if unicodedata.category(char) != 'Mn')
+        
+        # PASO 6: Limpiar caracteres especiales (proceso original)  
+        texto_limpio = re.sub(r'[^\w\s]', ' ', texto_sin_acentos)
+        texto_limpio = re.sub(r'\s+', ' ', texto_limpio).strip()
+        
+        # PASO 7: Limpieza final específica por tipo de catálogo
+        texto_final = self.limpieza_especifica_por_tipo(texto_limpio, tipo_catalogo)
+        
+        print(f"   Resultado final: '{texto_final}'")
+        return texto_final
     
     def buscar_en_referencias(self, texto_limpio, tipo_catalogo):
         """Buscar coincidencias en las referencias usando IA"""
@@ -694,7 +1434,7 @@ A,00003,OBRERA"""
             
             # Buscar coincidencia exacta
             for ref in referencias:
-                nombre_ref_limpio = self.limpiar_texto(ref['nombre_oficial'])
+                nombre_ref_limpio = self.limpiar_texto_inteligente(ref['nombre_oficial'])
                 if texto_limpio == nombre_ref_limpio:
                     return {
                         **ref,
@@ -1290,18 +2030,20 @@ def mostrar_config_base_datos():
                 version_row = result.fetchone()
                 version = version_row[0] if version_row else "Desconocida"
                 
+                
                 result = conn.execute(text("""
                     SELECT 
                         schemaname,
-                        tablename,
+                        relname as tablename,
                         n_tup_ins as inserts,
                         n_tup_upd as updates,
                         n_tup_del as deletes
                     FROM pg_stat_user_tables 
                     WHERE schemaname = 'public'
-                    ORDER BY tablename
+                    ORDER BY relname
                 """))
-                
+
+
                 # CORRECCIÓN: Manejar resultados correctamente
                 tablas_stats = []
                 for row in result:
@@ -1970,8 +2712,8 @@ def main():
     # Header principal
     st.markdown("""
     <div class="main-header">
-        <h1>🏠 Sistema Integral de Normalización Telmex</h1>
-        <p>Procesamiento Inteligente de Domicilios | AS400 ↔ PostgreSQL | Automatización Completa</p>
+        <h1>🏠 Red Nacional</h1>
+        <p>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios | AS400 ↔ PostgreSQL | Automatización Completa</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -2467,10 +3209,298 @@ def eliminar_archivo_procesado(id_archivo):
         except Exception as e:
             st.error(f"Error eliminando archivo: {str(e)}")
 
+# ========================================
+# FUNCIONES DE PRUEBA ESPECÍFICAS PASO 2
+# ========================================
+
+def probar_paso2_completo():
+    """
+    Probar la implementación completa del Paso 2
+    EJECUTAR DESPUÉS DE IMPLEMENTAR LOS CAMBIOS
+    """
+    
+    print("🧪 PROBANDO PASO 2 - LIMPIEZA INTELIGENTE COMPLETA")
+    print("=" * 60)
+    
+    # Casos de prueba específicos por tipo
+    casos_prueba = {
+        'ESTADOS': [
+            ("b.c.", "BAJA CALIFORNIA"),
+            ("CDMX", "CIUDAD DE MEXICO"),
+            ("Estado de México", "ESTADO DE MEXICO"), 
+            ("N.L.", "NUEVO LEON"),
+            ("distrito federal", "CIUDAD DE MEXICO")
+        ],
+        'CIUDADES': [
+            ("cd. juárez", "CIUDAD JUAREZ"),
+            ("guadalajara", "GUADALAJARA"),
+            ("CIUDAD DE MÉXICO", "CIUDAD DE MEXICO"),
+            ("gdle", "GUADALAJARA"),
+            ("MTY", "MONTERREY")
+        ],
+        'MUNICIPIOS': [
+            ("mpio. guadalajara", "GUADALAJARA"),
+            ("MUNICIPIO TIJUANA", "TIJUANA"),
+            ("benito juárez", "BENITO JUAREZ")
+        ],
+        'COLONIAS': [
+            ("col. centro", "CENTRO"),
+            ("DOCT0RES", "DOCTORES"),
+            ("STA. MARÍA LA RIBERA", "SANTA MARIA LA RIBERA"),
+            ("fracc. residencial", "RESIDENCIAL"),
+            ("centro histórico", "CENTRO HISTORICO")
+        ]
+    }
+    
+    try:
+        from sistema_completo_normalizacion import SistemaNormalizacion
+        sistema = SistemaNormalizacion()
+        
+        total_casos = 0
+        casos_exitosos = 0
+        
+        for tipo, casos in casos_prueba.items():
+            print(f"\n📋 PROBANDO TIPO: {tipo}")
+            print("-" * 40)
+            
+            for caso_original, esperado in casos:
+                total_casos += 1
+                print(f"\n🔍 Caso {total_casos}:")
+                print(f"   Original: '{caso_original}'")
+                print(f"   Esperado: '{esperado}'")
+                
+                try:
+                    if hasattr(sistema, 'limpiar_texto_inteligente'):
+                        resultado = sistema.limpiar_texto_inteligente(caso_original, tipo)
+                        print(f"   Resultado: '{resultado}'")
+                        
+                        # Verificar si el resultado es correcto o al menos mejorado
+                        if resultado == esperado:
+                            print("   ✅ PERFECTO - Coincidencia exacta")
+                            casos_exitosos += 1
+                        elif esperado in resultado or resultado in esperado:
+                            print("   ✅ BUENO - Coincidencia parcial")
+                            casos_exitosos += 1
+                        elif len(resultado) > len(caso_original.upper().strip()):
+                            print("   ⚡ MEJORADO - Texto expandido")
+                            casos_exitosos += 1
+                        else:
+                            print("   ⚠️ DIFERENTE - Verificar manualmente")
+                    else:
+                        print("   ❌ Método limpiar_texto_inteligente no encontrado")
+                        
+                except Exception as e:
+                    print(f"   ❌ Error: {e}")
+        
+        print(f"\n🎉 RESUMEN PASO 2:")
+        print(f"   Total casos probados: {total_casos}")
+        print(f"   Casos exitosos: {casos_exitosos}")
+        print(f"   Tasa de éxito: {casos_exitosos/total_casos*100:.1f}%")
+        
+        if casos_exitosos >= total_casos * 0.7:  # 70% de éxito mínimo
+            print(f"\n✅ PASO 2 COMPLETADO EXITOSAMENTE")
+            print(f"Proceder al Paso 3: Mejorar algoritmo de coincidencias")
+            return True
+        else:
+            print(f"\n⚠️ PASO 2 NECESITA AJUSTES")
+            print(f"Revisar los casos fallidos y ajustar diccionarios")
+            return False
+        
+    except ImportError:
+        print("❌ No se pudo importar SistemaNormalizacion")
+        print("Asegúrate de que el archivo principal esté guardado como 'sistema_completo_normalizacion.py'")
+        return False
+    except Exception as e:
+        print(f"❌ Error en prueba: {e}")
+        return False
+
+# ========================================
+# FUNCIÓN DE COMPARACIÓN ANTES/DESPUÉS
+# ========================================
+
+def comparar_limpieza_antes_despues_paso2():
+    """
+    Comparar limpieza original vs inteligente - Paso 2
+    """
+    
+    print("🔍 COMPARACIÓN ANTES/DESPUÉS - PASO 2")
+    print("=" * 50)
+    
+    casos_comparacion = [
+        "B.C.",
+        "DOCT0RES", 
+        "STA. MARÍA",
+        "CENTRO HISTÓRICO",
+        "CD. JUÁREZ",
+        "EDO. MEX.",
+        "FRACC. RESIDENCIAL"
+    ]
+    
+    try:
+        from sistema_completo_normalizacion import SistemaNormalizacion
+        sistema = SistemaNormalizacion()
+        
+        for caso in casos_comparacion:
+            print(f"\nTexto: '{caso}'")
+            
+            # Limpieza básica (simulación del método original)
+            original_simulado = caso.upper().strip()
+            # Quitar acentos básico
+            import unicodedata
+            original_simulado = unicodedata.normalize('NFD', original_simulado)
+            original_simulado = ''.join(char for char in original_simulado if unicodedata.category(char) != 'Mn')
+            print(f"  Original (simulado): '{original_simulado}'")
+            
+            # Limpieza inteligente
+            if hasattr(sistema, 'limpiar_texto_inteligente'):
+                inteligente = sistema.limpiar_texto_inteligente(caso, 'COLONIAS')
+                print(f"  Inteligente: '{inteligente}'")
+                
+                # Mostrar mejora
+                if len(inteligente) > len(original_simulado):
+                    print(f"  🎯 MEJORA: +{len(inteligente) - len(original_simulado)} caracteres")
+                elif inteligente != original_simulado:
+                    print(f"  🔄 CAMBIO: Texto transformado")
+                else:
+                    print(f"  ➡️ SIN CAMBIO")
+            
+            print("  " + "="*40)
+    
+    except Exception as e:
+        print(f"❌ Error en comparación: {e}")
+
+# ========================================
+# VERIFICACIÓN PASO 2
+# ========================================
+
+def verificar_paso2_implementacion():
+    """
+    Verificar que el Paso 2 está implementado correctamente
+    """
+    
+    print("🔍 VERIFICANDO IMPLEMENTACIÓN PASO 2...")
+    
+    try:
+        from sistema_completo_normalizacion import SistemaNormalizacion
+        sistema = SistemaNormalizacion()
+        
+        # Verificar que los métodos del Paso 1 existen
+        metodos_paso1 = [
+            'inicializar_diccionarios_inteligentes',
+            'expandir_abreviaciones_inteligente',
+            'corregir_errores_tipograficos'
+        ]
+        
+        for metodo in metodos_paso1:
+            if hasattr(sistema, metodo):
+                print(f"✅ Paso 1 - Método {metodo} disponible")
+            else:
+                print(f"❌ Paso 1 - Método {metodo} falta")
+                return False
+        
+        # Verificar que los nuevos métodos del Paso 2 existen
+        metodos_paso2 = [
+            'limpiar_texto_inteligente',
+            'limpieza_especifica_por_tipo',
+            'inicializar_patrones_limpieza'
+        ]
+        
+        for metodo in metodos_paso2:
+            if hasattr(sistema, metodo):
+                print(f"✅ Paso 2 - Método {metodo} disponible")
+            else:
+                print(f"❌ Paso 2 - Método {metodo} falta - IMPLEMENTAR")
+                return False
+        
+        # Verificar que los diccionarios están cargados
+        diccionarios_requeridos = ['abreviaciones', 'correcciones', 'sinonimos']
+        
+        for diccionario in diccionarios_requeridos:
+            if hasattr(sistema, diccionario) and len(getattr(sistema, diccionario)) > 0:
+                print(f"✅ Diccionario {diccionario} cargado ({len(getattr(sistema, diccionario))} elementos)")
+            else:
+                print(f"❌ Diccionario {diccionario} no cargado")
+                return False
+        
+        # Probar caso simple
+        try:
+            resultado = sistema.limpiar_texto_inteligente("B.C.", "ESTADOS")
+            if "BAJA CALIFORNIA" in resultado:
+                print("✅ Limpieza inteligente funcionando correctamente")
+                print(f"   Resultado de prueba: '{resultado}'")
+            else:
+                print(f"⚠️ Resultado inesperado: '{resultado}' (esperado que contenga 'BAJA CALIFORNIA')")
+        except Exception as e:
+            print(f"❌ Error probando limpieza: {e}")
+            return False
+        
+        print("\n🎉 PASO 2 VERIFICADO CORRECTAMENTE")
+        print("Ejecutar probar_paso2_completo() para pruebas detalladas")
+        return True
+        
+    except ImportError:
+        print("❌ Error importando SistemaNormalizacion")
+        print("Asegúrate de que el archivo esté guardado correctamente")
+        return False
+    except Exception as e:
+        print(f"❌ Error en verificación: {e}")
+        return False
+
+# ========================================
+# INSTRUCCIONES DE IMPLEMENTACIÓN
+# ========================================
+
+def mostrar_instrucciones_paso2():
+    """
+    Mostrar instrucciones claras para implementar el Paso 2
+    """
+    
+    print("📋 INSTRUCCIONES PARA IMPLEMENTAR PASO 2")
+    print("=" * 50)
+    
+    print("""
+CAMBIOS NECESARIOS EN TU ARCHIVO PRINCIPAL:
+
+1. REEMPLAZAR el método limpiar_texto() por:
+   - Cambiar nombre a limpiar_texto_inteligente()
+   - Agregar parámetro tipo_catalogo
+   - Usar la lógica del código arriba
+
+2. ACTUALIZAR el método normalizar_registro():
+   - Cambiar limpiar_texto() por limpiar_texto_inteligente()
+   - Pasar el tipo_catalogo como parámetro
+
+3. VERIFICAR que los métodos del Paso 1 estén en la clase:
+   - inicializar_diccionarios_inteligentes()
+   - expandir_abreviaciones_inteligente()
+   - corregir_errores_tipograficos()
+   - limpieza_especifica_por_tipo()
+   - inicializar_patrones_limpieza()
+
+4. PROBAR la implementación:
+   - Ejecutar verificar_paso2_implementacion()
+   - Ejecutar probar_paso2_completo()
+   - Ejecutar comparar_limpieza_antes_despues_paso2()
+
+ORDEN DE EJECUCIÓN:
+1. Implementar cambios en el código
+2. Guardar archivo
+3. Ejecutar verificar_paso2_implementacion()
+4. Si pasa, ejecutar probar_paso2_completo()
+5. Analizar resultados y ajustar si es necesario
+    """)
+
+
 
 # ========================================
 # 10. EJECUCIÓN PRINCIPAL
 # ========================================
 
 if __name__ == "__main__":
+    if IS_RAILWAY:
+        # En Railway: usar puerto dinámico
+        port = int(os.getenv('PORT', 8501))
+        st.set_option('server.port', port)
+        st.set_option('server.address', '0.0.0.0')
     main()
+
