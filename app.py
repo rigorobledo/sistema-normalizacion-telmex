@@ -3497,5 +3497,23 @@ ORDEN DE EJECUCIÓN:
 # ========================================
 
 if __name__ == "__main__":
-    main()
+    if IS_RAILWAY:
+        # En Railway: usar puerto dinámico con subprocess
+        import subprocess
+        import sys
+        
+        port = int(os.getenv('PORT', 8501))
+        print(f"Railway detected - Starting on port {port}")
+        
+        cmd = [
+            sys.executable, '-m', 'streamlit', 'run', __file__,
+            f'--server.port={port}',
+            '--server.address=0.0.0.0',
+            '--server.headless=true',
+            '--server.enableCORS=false'
+        ]
+        subprocess.run(cmd)
+    else:
+        # Local: usar configuración normal
+        main()
 
