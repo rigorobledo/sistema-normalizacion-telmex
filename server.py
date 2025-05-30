@@ -10,8 +10,8 @@ app = Flask(__name__)
 
 # Puerto donde Railway espera la aplicación
 RAILWAY_PORT = int(os.environ.get('PORT', 5000))
-# Puerto interno donde correrá Streamlit
-STREAMLIT_PORT = 8501
+# Puerto interno donde correrá Streamlit (diferente al de Railway)
+STREAMLIT_PORT = 8502
 
 def start_streamlit():
     """Inicia Streamlit en segundo plano"""
