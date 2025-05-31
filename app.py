@@ -998,14 +998,21 @@ class SistemaNormalizacion:
         self.inicializar_patrones_limpieza()
         
     def crear_conexion(self):
-        """Crear conexión a PostgreSQL"""
+        """Crear conexión a PostgreSQL - Versión adaptativa"""
         try:
-            engine = create_engine(f"postgresql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}/{DATABASE_CONFIG['database']}")
+            if IS_RAILWAY and 'url' in DATABASE_CONFIG:
+                # En Railway: usar URL directa
+                engine = create_engine(DATABASE_CONFIG['url'])
+            else:
+                # Local: usar configuración tradicional
+                config = DATABASE_CONFIG
+                connection_string = f"postgresql://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['database']}"
+                engine = create_engine(connection_string)
+            
             return engine
         except Exception as e:
             st.error(f"Error de conexión: {e}")
-            return None
-    
+            return None    
     def crear_tablas_sistema(self):
         """Crear todas las tablas necesarias del sistema"""
         if not self.engine:
