@@ -24,15 +24,6 @@ import re
 from fuzzywuzzy import fuzz, process
 import unicodedata
 
-# ========================================
-# SISTEMA COMPLETO DE LOGIN Y AUTENTICACIÓN
-# AGREGAR AL INICIO DEL ARCHIVO (después de los imports)
-# ========================================
-
-import hashlib
-import secrets
-from datetime import datetime, timedelta
-
 import os
 from dotenv import load_dotenv
 
@@ -42,726 +33,6 @@ load_dotenv()
 # Detectar ambiente
 IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
 IS_LOCAL = not IS_RAILWAY
-
-
-# ========================================
-# 1. CONFIGURACIÓN AVANZADA
-# ========================================
-
-# Configuración adaptativa de base de datos
-if IS_RAILWAY:
-    # En Railway: usar DATABASE_URL
-    DATABASE_URL = os.getenv('DATABASE_URL')
-    # Railway da la URL completa, la parseamos después
-    DATABASE_CONFIG = {'url': DATABASE_URL}
-else:
-    # Local: usar configuración original
-    DATABASE_CONFIG = {
-        'host': os.getenv('DB_HOST', 'localhost'),
-        'port': int(os.getenv('DB_PORT', 5432)),
-        'database': os.getenv('DB_NAME', 'normalizacion_domicilios'),
-        'user': os.getenv('DB_USER', 'postgres'),
-        'password': os.getenv('DB_PASSWORD', 'admin123')
-    }
-
-
-
-# ========================================
-# 1. TABLA DE USUARIOS - AGREGAR A crear_tablas_sistema()
-# ========================================
-
-def crear_tabla_usuarios(engine):
-    """Crear tabla de usuarios con roles"""
-    
-    sql_usuarios = """
-    CREATE TABLE IF NOT EXISTS usuarios (
-        id_usuario UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        username VARCHAR(50) UNIQUE NOT NULL,
-        email VARCHAR(100) UNIQUE NOT NULL,
-        password_hash VARCHAR(255) NOT NULL,
-        salt VARCHAR(255) NOT NULL,
-        nombre_completo VARCHAR(100) NOT NULL,
-        rol VARCHAR(20) NOT NULL DEFAULT 'USUARIO',
-        activo BOOLEAN DEFAULT TRUE,
-        fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        fecha_ultimo_acceso TIMESTAMP,
-        creado_por UUID REFERENCES usuarios(id_usuario),
-        intentos_fallidos INTEGER DEFAULT 0,
-        bloqueado_hasta TIMESTAMP,
-        
-        CONSTRAINT chk_rol CHECK (rol IN ('SUPERUSUARIO', 'GERENTE', 'USUARIO')),
-        CONSTRAINT chk_username_length CHECK (length(username) >= 3),
-        CONSTRAINT chk_password_complexity CHECK (length(password_hash) > 0)
-    );
-    
-    -- Índices para optimización
-    CREATE INDEX IF NOT EXISTS idx_usuarios_username ON usuarios(username);
-    CREATE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios(email);
-    CREATE INDEX IF NOT EXISTS idx_usuarios_activo ON usuarios(activo);
-    
-    -- Tabla de sesiones activas
-    CREATE TABLE IF NOT EXISTS sesiones_usuario (
-        id_sesion UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        id_usuario UUID REFERENCES usuarios(id_usuario) ON DELETE CASCADE,
-        token_sesion VARCHAR(255) UNIQUE NOT NULL,
-        ip_address INET,
-        user_agent TEXT,
-        fecha_inicio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        fecha_expiracion TIMESTAMP NOT NULL,
-        activa BOOLEAN DEFAULT TRUE
-    );
-    
-    CREATE INDEX IF NOT EXISTS idx_sesiones_token ON sesiones_usuario(token_sesion);
-    CREATE INDEX IF NOT EXISTS idx_sesiones_usuario ON sesiones_usuario(id_usuario);
-    """
-    
-    try:
-        with engine.connect() as conn:
-            conn.execute(text(sql_usuarios))
-            conn.commit()
-        return True
-    except Exception as e:
-        print(f"Error creando tabla usuarios: {e}")
-        return False
-
-# ========================================
-# 2. CLASE DE GESTIÓN DE USUARIOS
-# ========================================
-
-class GestorUsuarios:
-    """Clase para manejar autenticación y usuarios"""
-    
-    def __init__(self, engine):
-        self.engine = engine
-    
-    def generar_hash_password(self, password):
-        """Generar hash seguro de contraseña"""
-        salt = secrets.token_hex(32)
-        password_hash = hashlib.pbkdf2_hmac('sha256', 
-                                           password.encode('utf-8'), 
-                                           salt.encode('utf-8'), 
-                                           100000)
-        return password_hash.hex(), salt
-    
-    def verificar_password(self, password, password_hash, salt):
-        """Verificar contraseña"""
-        new_hash = hashlib.pbkdf2_hmac('sha256', 
-                                      password.encode('utf-8'), 
-                                      salt.encode('utf-8'), 
-                                      100000)
-        return new_hash.hex() == password_hash
-    
-    def crear_usuario(self, username, email, password, nombre_completo, rol='USUARIO', creado_por=None):
-        """Crear nuevo usuario"""
-        try:
-            # Validaciones
-            if len(username) < 3:
-                return False, "El username debe tener al menos 3 caracteres"
-            
-            if len(password) < 6:
-                return False, "La contraseña debe tener al menos 6 caracteres"
-            
-            # Verificar si ya existe
-            with self.engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM usuarios 
-                    WHERE username = :username OR email = :email
-                """), {'username': username, 'email': email})
-                
-                if result.fetchone()[0] > 0:
-                    return False, "Usuario o email ya existe"
-                
-                # Crear hash de contraseña
-                password_hash, salt = self.generar_hash_password(password)
-                
-                # Insertar usuario
-                conn.execute(text("""
-                    INSERT INTO usuarios (username, email, password_hash, salt, nombre_completo, rol, creado_por)
-                    VALUES (:username, :email, :password_hash, :salt, :nombre_completo, :rol, :creado_por)
-                """), {
-                    'username': username,
-                    'email': email,
-                    'password_hash': password_hash,
-                    'salt': salt,
-                    'nombre_completo': nombre_completo,
-                    'rol': rol,
-                    'creado_por': creado_por
-                })
-                
-                conn.commit()
-                return True, "Usuario creado exitosamente"
-        
-        except Exception as e:
-            return False, f"Error creando usuario: {str(e)}"
-    
-    def autenticar_usuario(self, username, password):
-        """Autenticar usuario"""
-        try:
-            with self.engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT id_usuario, username, email, password_hash, salt, 
-                           nombre_completo, rol, activo, intentos_fallidos, bloqueado_hasta
-                    FROM usuarios 
-                    WHERE username = :username AND activo = true
-                """), {'username': username})
-                
-                user_row = result.fetchone()
-                
-                if not user_row:
-                    return False, None, "Usuario no encontrado o inactivo"
-                
-                user_data = dict(user_row._mapping)
-                
-                # Verificar si está bloqueado
-                if user_data['bloqueado_hasta'] and user_data['bloqueado_hasta'] > datetime.now():
-                    return False, None, f"Usuario bloqueado hasta {user_data['bloqueado_hasta']}"
-                
-                # Verificar contraseña
-                if self.verificar_password(password, user_data['password_hash'], user_data['salt']):
-                    # Login exitoso - resetear intentos fallidos
-                    conn.execute(text("""
-                        UPDATE usuarios 
-                        SET fecha_ultimo_acceso = CURRENT_TIMESTAMP, intentos_fallidos = 0, bloqueado_hasta = NULL
-                        WHERE id_usuario = :id_usuario
-                    """), {'id_usuario': user_data['id_usuario']})
-                    
-                    conn.commit()
-                    
-                    # Remover datos sensibles
-                    del user_data['password_hash']
-                    del user_data['salt']
-                    
-                    return True, user_data, "Login exitoso"
-                else:
-                    # Incrementar intentos fallidos
-                    new_attempts = user_data['intentos_fallidos'] + 1
-                    bloqueo = None
-                    
-                    if new_attempts >= 5:
-                        bloqueo = datetime.now() + timedelta(minutes=30)
-                    
-                    conn.execute(text("""
-                        UPDATE usuarios 
-                        SET intentos_fallidos = :intentos, bloqueado_hasta = :bloqueo
-                        WHERE id_usuario = :id_usuario
-                    """), {
-                        'intentos': new_attempts,
-                        'bloqueo': bloqueo,
-                        'id_usuario': user_data['id_usuario']
-                    })
-                    
-                    conn.commit()
-                    
-                    if bloqueo:
-                        return False, None, "Demasiados intentos fallidos. Usuario bloqueado por 30 minutos"
-                    else:
-                        return False, None, f"Contraseña incorrecta. Intentos restantes: {5 - new_attempts}"
-        
-        except Exception as e:
-            return False, None, f"Error en autenticación: {str(e)}"
-    
-    def crear_sesion(self, id_usuario, ip_address=None, user_agent=None):
-        """Crear sesión de usuario"""
-        try:
-            token = secrets.token_urlsafe(64)
-            fecha_expiracion = datetime.now() + timedelta(hours=8)  # 8 horas
-            
-            with self.engine.connect() as conn:
-                conn.execute(text("""
-                    INSERT INTO sesiones_usuario (id_usuario, token_sesion, ip_address, user_agent, fecha_expiracion)
-                    VALUES (:id_usuario, :token, :ip, :user_agent, :expiracion)
-                """), {
-                    'id_usuario': id_usuario,
-                    'token': token,
-                    'ip': ip_address,
-                    'user_agent': user_agent,
-                    'expiracion': fecha_expiracion
-                })
-                
-                conn.commit()
-                return token
-        
-        except Exception as e:
-            print(f"Error creando sesión: {e}")
-            return None
-    
-    def validar_sesion(self, token):
-        """Validar sesión activa"""
-        try:
-            with self.engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT u.id_usuario, u.username, u.email, u.nombre_completo, u.rol,
-                           s.fecha_expiracion
-                    FROM sesiones_usuario s
-                    JOIN usuarios u ON s.id_usuario = u.id_usuario
-                    WHERE s.token_sesion = :token AND s.activa = true AND s.fecha_expiracion > CURRENT_TIMESTAMP
-                """), {'token': token})
-                
-                session_row = result.fetchone()
-                
-                if session_row:
-                    return dict(session_row._mapping)
-                else:
-                    return None
-        
-        except Exception as e:
-            print(f"Error validando sesión: {e}")
-            return None
-    
-    def cerrar_sesion(self, token):
-        """Cerrar sesión"""
-        try:
-            with self.engine.connect() as conn:
-                conn.execute(text("""
-                    UPDATE sesiones_usuario 
-                    SET activa = false 
-                    WHERE token_sesion = :token
-                """), {'token': token})
-                
-                conn.commit()
-                return True
-        
-        except Exception as e:
-            print(f"Error cerrando sesión: {e}")
-            return False
-    
-    def listar_usuarios(self):
-        """Listar todos los usuarios"""
-        try:
-            with self.engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT u.id_usuario, u.username, u.email, u.nombre_completo, u.rol, 
-                           u.activo, u.fecha_creacion, u.fecha_ultimo_acceso,
-                           c.username as creado_por_username
-                    FROM usuarios u
-                    LEFT JOIN usuarios c ON u.creado_por = c.id_usuario
-                    ORDER BY u.fecha_creacion DESC
-                """))
-                
-                usuarios = []
-                for row in result:
-                    usuarios.append(dict(row._mapping))
-                
-                return usuarios
-        
-        except Exception as e:
-            print(f"Error listando usuarios: {e}")
-            return []
-
-# ========================================
-# 3. FUNCIONES DE LOGIN PARA STREAMLIT
-# ========================================
-
-def inicializar_sistema_usuarios():
-    """Inicializar sistema de usuarios"""
-    
-    if 'gestor_usuarios' not in st.session_state:
-        # Crear gestor de usuarios
-        sistema = SistemaNormalizacion()
-        st.session_state.gestor_usuarios = GestorUsuarios(sistema.engine)
-        
-        # Crear tabla de usuarios
-        crear_tabla_usuarios(sistema.engine)
-        
-        # Crear superusuario por defecto si no existe
-        crear_superusuario_default()
-
-def crear_superusuario_default():
-    """Crear superusuario por defecto"""
-    
-    gestor = st.session_state.gestor_usuarios
-    
-    try:
-        with gestor.engine.connect() as conn:
-            result = conn.execute(text("SELECT COUNT(*) FROM usuarios WHERE rol = 'SUPERUSUARIO'"))
-            count = result.fetchone()[0]
-            
-            if count == 0:
-                # Crear superusuario por defecto
-                exito, mensaje = gestor.crear_usuario(
-                    username='admin',
-                    email='admin@telmex.com',
-                    password='admin123',  # CAMBIAR EN PRODUCCIÓN
-                    nombre_completo='Administrador del Sistema',
-                    rol='SUPERUSUARIO'
-                )
-                
-                if exito:
-                    st.success("✅ Superusuario por defecto creado: admin/admin123")
-                else:
-                    st.error(f"Error creando superusuario: {mensaje}")
-    
-    except Exception as e:
-        st.error(f"Error verificando superusuario: {e}")
-
-def mostrar_pantalla_login():
-    """Login con estructura similar al dashboard (con tabs)"""
-    
-    # HEADER IGUAL AL DASHBOARD
-    col_logo, col_title = st.columns([1, 8])
-    with col_logo:
-        try:
-            st.image("logo_RN.png", width=120)
-        except:
-            st.markdown("🏠")
-    with col_title:
-        st.markdown("""
-        <div  style="text-align: left;">
-            <h3>Red Nacional Última Milla</h3>
-            <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # TABS COMO EL DASHBOARD
-    tab1, tab2 = st.tabs(["🔐 Iniciar Sesión", "ℹ️ Información"])
-    
-    with tab1:
-        col1, col2, col3 = st.columns([1, 2, 1])
-        
-        with col2:
-            st.markdown("### 🔐 Acceso al Sistema")
-            
-            with st.form("login_form"):
-                username = st.text_input("👤 Usuario:", placeholder="Ingresa tu usuario")
-                password = st.text_input("🔒 Contraseña:", type="password", placeholder="Ingresa tu contraseña")
-                
-                login_button = st.form_submit_button("🚀 Ingresar", use_container_width=True, type="primary")
-                
-                if login_button:
-                    if username and password:
-                        gestor = st.session_state.gestor_usuarios
-                        exito, user_data, mensaje = gestor.autenticar_usuario(username, password)
-                        
-                        if exito:
-                            token = gestor.crear_sesion(user_data['id_usuario'])
-                            
-                            if token:
-                                st.session_state.usuario_autenticado = True
-                                st.session_state.usuario_actual = user_data
-                                st.session_state.token_sesion = token
-                                
-                                st.success(f"¡Bienvenido, {user_data['nombre_completo']}!")
-                                st.rerun()
-                            else:
-                                st.error("Error creando sesión")
-                        else:
-                            st.error(mensaje)
-                    else:
-                        st.warning("Por favor, ingresa usuario y contraseña")
-    
-    with tab2:
-        st.markdown("### ℹ️ Información del Sistema")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("""
-            **🔑 Credenciales por Defecto:**
-            - **Usuario:** admin
-            - **Contraseña:** admin123
-            
-            **👥 Roles del Sistema:**
-            - **SUPERUSUARIO:** Control total
-            - **GERENTE:** Gestión avanzada  
-            - **USUARIO:** Solo visualización
-            """)
-        
-        with col2:
-            st.markdown("""
-            **🛡️ Características de Seguridad:**
-            - Contraseñas cifradas
-            - Bloqueo por intentos fallidos
-            - Sesiones seguras (8 horas)
-            - Auditoría de accesos
-            
-            **📞 Soporte:**
-            - Contacta al administrador del sistema
-            - Para problemas de acceso
-            """)
-        
-        st.info("⚠️ **Importante:** Cambia la contraseña por defecto después del primer acceso por seguridad.")
-
-
-def verificar_autenticacion():
-    """Verificar si el usuario está autenticado"""
-    
-    if 'usuario_autenticado' not in st.session_state:
-        st.session_state.usuario_autenticado = False
-    
-    if 'token_sesion' in st.session_state and st.session_state.token_sesion:
-        # Validar sesión
-        gestor = st.session_state.gestor_usuarios
-        user_data = gestor.validar_sesion(st.session_state.token_sesion)
-        
-        if user_data:
-            st.session_state.usuario_autenticado = True
-            st.session_state.usuario_actual = user_data
-            return True
-        else:
-            # Sesión expirada
-            st.session_state.usuario_autenticado = False
-            if 'usuario_actual' in st.session_state:
-                del st.session_state.usuario_actual
-            if 'token_sesion' in st.session_state:
-                del st.session_state.token_sesion
-            return False
-    
-    return st.session_state.usuario_autenticado
-
-def cerrar_sesion():
-    """Cerrar sesión del usuario"""
-    
-    if 'token_sesion' in st.session_state:
-        gestor = st.session_state.gestor_usuarios
-        gestor.cerrar_sesion(st.session_state.token_sesion)
-    
-    # Limpiar session_state
-    st.session_state.usuario_autenticado = False
-    if 'usuario_actual' in st.session_state:
-        del st.session_state.usuario_actual
-    if 'token_sesion' in st.session_state:
-        del st.session_state.token_sesion
-    
-    st.rerun()
-
-def es_superusuario():
-    """Verificar si el usuario actual es superusuario"""
-    if 'usuario_actual' in st.session_state:
-        return st.session_state.usuario_actual.get('rol') in ['SUPERUSUARIO', 'GERENTE']
-    return False
-
-def mostrar_barra_usuario():
-    """Mostrar barra de usuario autenticado"""
-    
-    if 'usuario_actual' in st.session_state:
-        user = st.session_state.usuario_actual
-        
-        col1, col2, col3 = st.columns([6, 2, 1])
-        
-        with col1:
-            rol_emoji = "👑" if user['rol'] == 'SUPERUSUARIO' else "👨‍💼" if user['rol'] == 'GERENTE' else "👤"
-            st.markdown(f"**{rol_emoji} {user['nombre_completo']}** | {user['rol']}")
-        
-        with col2:
-            if es_superusuario():
-                if st.button("👥 Gestionar Usuarios", key="manage_users"):
-                    st.session_state.mostrar_gestion_usuarios = True
-        
-        with col3:
-            if st.button("🚪 Salir", key="logout"):
-                cerrar_sesion()
-
-# ========================================
-# 4. GESTIÓN DE USUARIOS (SOLO SUPERUSUARIOS)
-# ========================================
-
-def mostrar_gestion_usuarios():
-    """Interfaz de gestión de usuarios (solo para superusuarios)"""
-    
-    if not es_superusuario():
-        st.error("❌ No tienes permisos para acceder a esta sección")
-        return
-    
-    st.markdown("## 👥 Gestión de Usuarios")
-    
-    tab1, tab2 = st.tabs(["📋 Lista de Usuarios", "➕ Crear Usuario"])
-    
-    with tab1:
-        mostrar_lista_usuarios()
-    
-    with tab2:
-        mostrar_formulario_crear_usuario()
-
-def mostrar_lista_usuarios():
-    """Mostrar lista de usuarios"""
-    
-    gestor = st.session_state.gestor_usuarios
-    usuarios = gestor.listar_usuarios()
-    
-    if usuarios:
-        st.markdown("### 📊 Usuarios del Sistema")
-        
-        # Convertir a DataFrame para mostrar
-        df_usuarios = pd.DataFrame(usuarios)
-        
-        # Preparar columnas para mostrar
-        df_display = df_usuarios[['username', 'nombre_completo', 'email', 'rol', 'activo', 'fecha_ultimo_acceso']].copy()
-        df_display['activo'] = df_display['activo'].apply(lambda x: "✅ Activo" if x else "❌ Inactivo")
-        df_display['fecha_ultimo_acceso'] = pd.to_datetime(df_display['fecha_ultimo_acceso']).dt.strftime('%Y-%m-%d %H:%M')
-        
-        df_display.columns = ['Usuario', 'Nombre Completo', 'Email', 'Rol', 'Estado', 'Último Acceso']
-        
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-        
-        # Estadísticas
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Usuarios", len(usuarios))
-        
-        with col2:
-            activos = sum(1 for u in usuarios if u['activo'])
-            st.metric("Usuarios Activos", activos)
-        
-        with col3:
-            superusuarios = sum(1 for u in usuarios if u['rol'] in ['SUPERUSUARIO', 'GERENTE'])
-            st.metric("Administradores", superusuarios)
-        
-        with col4:
-            # Usuarios con acceso reciente (últimos 7 días)
-            fecha_limite = datetime.now() - timedelta(days=7)
-            recientes = sum(1 for u in usuarios if u['fecha_ultimo_acceso'] and 
-                          pd.to_datetime(u['fecha_ultimo_acceso']) > fecha_limite)
-            st.metric("Activos (7 días)", recientes)
-    
-    else:
-        st.info("No hay usuarios registrados en el sistema")
-
-def mostrar_formulario_crear_usuario():
-    """Formulario para crear nuevo usuario"""
-    
-    st.markdown("### ➕ Crear Nuevo Usuario")
-    
-    with st.form("crear_usuario_form"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            nuevo_username = st.text_input("👤 Usuario:", placeholder="ej: jperez")
-            nuevo_email = st.text_input("📧 Email:", placeholder="usuario@telmex.com")
-            nuevo_password = st.text_input("🔒 Contraseña:", type="password", 
-                                         help="Mínimo 6 caracteres")
-        
-        with col2:
-            nuevo_nombre = st.text_input("👨‍💼 Nombre Completo:", placeholder="Juan Pérez")
-            nuevo_rol = st.selectbox("🎭 Rol:", 
-                                   options=['USUARIO', 'GERENTE', 'SUPERUSUARIO'],
-                                   help="USUARIO: Solo visualización\nGERENTE: Gestión básica\nSUPERUSUARIO: Control total")
-        
-        crear_usuario_button = st.form_submit_button("✅ Crear Usuario", type="primary")
-        
-        if crear_usuario_button:
-            if all([nuevo_username, nuevo_email, nuevo_password, nuevo_nombre]):
-                gestor = st.session_state.gestor_usuarios
-                user_actual = st.session_state.usuario_actual
-                
-                exito, mensaje = gestor.crear_usuario(
-                    username=nuevo_username,
-                    email=nuevo_email,
-                    password=nuevo_password,
-                    nombre_completo=nuevo_nombre,
-                    rol=nuevo_rol,
-                    creado_por=user_actual['id_usuario']
-                )
-                
-                if exito:
-                    st.success(f"✅ Usuario '{nuevo_username}' creado exitosamente")
-                    st.rerun()
-                else:
-                    st.error(f"❌ {mensaje}")
-            else:
-                st.warning("⚠️ Por favor, completa todos los campos")
-
-# ========================================
-# 5. INTEGRACIÓN CON EL MAIN EXISTENTE
-# ========================================
-
-def main_con_autenticacion():
-    """Función main con autenticación integrada"""
-    
-    # Inicializar sistema de usuarios
-    inicializar_sistema_usuarios()
-    
-    # Verificar autenticación
-    if not verificar_autenticacion():
-        mostrar_pantalla_login()
-        return
-    
-    # Usuario autenticado - mostrar aplicación
-    mostrar_barra_usuario()
-    
-    # Verificar si se debe mostrar gestión de usuarios
-    if st.session_state.get('mostrar_gestion_usuarios', False):
-        mostrar_gestion_usuarios()
-        
-        if st.button("⬅️ Volver al Dashboard"):
-            st.session_state.mostrar_gestion_usuarios = False
-            st.rerun()
-        
-        return
-    
-    # Aplicación principal existente
-    main_aplicacion_original()
-
-def main_aplicacion_original():
-    """Tu función main() original - RENOMBRAR tu main() actual a esto"""
-    
-    # Aplicar estilos CSS
-    st.markdown(f"""
-    <style>
-        .stApp {{
-            background: {COLORES['gris_claro']};
-        }}
-        
-        .main-header {{
-            background: linear-gradient(135deg, {COLORES['azul_telmex']}, {COLORES['rojo_principal']});
-            background: linear-gradient(135deg, {COLORES['blanco']}, {COLORES['blanco']});
-            color: navy;
-            padding: 2rem;
-            border-radius: 15px;
-            text-align: center;
-            margin-bottom: 2rem;
-            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
-        }}
-        
-        .main-header h1 {{
-            font-size: 2.5rem;
-            font-weight: 900;
-            margin: 0;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }}
-        
-        .main-header p {{
-            font-size: 1.2rem;
-            margin: 0.5rem 0 0 0;
-            opacity: 0.9;
-        }}
-    </style>
-    """, unsafe_allow_html=True)
-    
-    # Header principal
-    col_logo, col_title = st.columns([1, 8])
-    with col_logo:
-        try:
-            st.image("logo_RN.png", width=120)
-        except:
-            st.markdown("🏠")
-    with col_title:
-        st.markdown("""
-        <div  style="text-align: left;">
-            <h3>Red Nacional Última Milla</h3>
-            <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Navegación principal
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Dashboard", 
-        "📁 Carga de Archivos", 
-        "📋 Resultados", 
-        "⚙️ Configuración"
-    ])
-    
-    with tab1:
-        mostrar_dashboard_principal()
-    
-    with tab2:
-        mostrar_interfaz_carga()
-    
-    with tab3:
-        mostrar_seccion_resultados()
-    
-    with tab4:
-        mostrar_configuracion_sistema()
 
 # ========================================
 # PASO 1: AGREGAR DICCIONARIOS INTELIGENTES
@@ -906,13 +177,21 @@ PATRONES_LIMPIEZA_MEXICO = [
 # 1. CONFIGURACIÓN AVANZADA
 # ========================================
 
-DATABASE_CONFIG = {
-    'host': 'localhost',
-    'port': 5432,
-    'database': 'normalizacion_domicilios',
-    'user': 'postgres',
-    'password': 'admin123'
-}
+# Configuración adaptativa de base de datos
+if IS_RAILWAY:
+    # En Railway: usar DATABASE_URL
+    DATABASE_URL = os.getenv('DATABASE_URL')
+    # Railway da la URL completa, la parseamos después
+    DATABASE_CONFIG = {'url': DATABASE_URL}
+else:
+    # Local: usar configuración original
+    DATABASE_CONFIG = {
+        'host': os.getenv('DB_HOST', 'localhost'),
+        'port': int(os.getenv('DB_PORT', 5432)),
+        'database': os.getenv('DB_NAME', 'normalizacion_domicilios'),
+        'user': os.getenv('DB_USER', 'postgres'),
+        'password': os.getenv('DB_PASSWORD', 'admin123')
+    }
 
 # Configuración de página
 st.set_page_config(
@@ -1012,14 +291,13 @@ class SistemaNormalizacion:
             return engine
         except Exception as e:
             st.error(f"Error de conexión: {e}")
-            return None    
+            return None
+    
     def crear_tablas_sistema(self):
         """Crear todas las tablas necesarias del sistema"""
         if not self.engine:
             return
-
-        crear_tabla_usuarios(self.engine)
-
+            
         sqls = [
             # Tabla de referencias unificada
             """
@@ -2413,7 +1691,7 @@ def mostrar_referencias_actuales():
 # ========================================
 
 def mostrar_procesamiento_tiempo_real():
-    """Mostrar el progreso de procesamiento en tiempo real - SIN BOTÓN ELIMINAR"""
+    """Mostrar el progreso de procesamiento en tiempo real - CORREGIDO"""
     
     st.markdown("### ⚙️ Monitor de Procesamiento")
     
@@ -2481,74 +1759,21 @@ def mostrar_procesamiento_tiempo_real():
                     with col2:
                         st.info(f"**Cargado:** {archivo['fecha_carga']}")
                     
-                    # BOTONES AJUSTADOS - SIN ELIMINAR (2 columnas en lugar de 3)
-                    col1, col2 = st.columns(2)
+                    # Botones de acción
+                    col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        if st.button(f"📊 Ver Resultados", key=f"ver_{archivo['id_archivo']}", use_container_width=True):
+                        if st.button(f"📊 Ver Resultados", key=f"ver_{archivo['id_archivo']}"):
                             mostrar_resultados_archivo(archivo['id_archivo'])
                     
                     with col2:
-                        if st.button(f"📥 Descargar", key=f"desc_{archivo['id_archivo']}", use_container_width=True):
+                        if st.button(f"📥 Descargar", key=f"desc_{archivo['id_archivo']}"):
                             descargar_resultados_archivo(archivo['id_archivo'])
                     
-                    # INFORMACIÓN ADICIONAL EN LUGAR DEL BOTÓN ELIMINAR
-                    if archivo['estado_procesamiento'] == 'COMPLETADO':
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            # Calcular tasa de éxito
-                            if procesados > 0:
-                                # Obtener estadísticas del archivo
-                                try:
-                                    with sistema.engine.connect() as conn_stats:
-                                        result_stats = conn_stats.execute(text("""
-                                            SELECT 
-                                                COUNT(CASE WHEN valor_normalizado IS NOT NULL THEN 1 END) as exitosos,
-                                                COALESCE(AVG(CASE WHEN confianza > 0 THEN confianza END), 0) as confianza_prom
-                                            FROM resultados_normalizacion 
-                                            WHERE id_archivo = :id_archivo
-                                        """), {'id_archivo': archivo['id_archivo']})
-                                        
-                                        stats_row = result_stats.fetchone()
-                                        if stats_row:
-                                            exitosos = int(stats_row[0] or 0)
-                                            confianza_prom = float(stats_row[1] or 0)
-                                            tasa_exito = (exitosos / procesados * 100) if procesados > 0 else 0
-                                            
-                                            st.success(f"✅ **Éxito:** {tasa_exito:.1f}% ({exitosos:,}/{procesados:,})")
-                                        else:
-                                            st.info("ℹ️ **Estado:** Completado")
-                                except:
-                                    st.info("ℹ️ **Estado:** Completado")
-                            else:
-                                st.info("ℹ️ **Estado:** Completado")
-                        
-                        with col2:
-                            # Mostrar confianza promedio si está disponible
-                            try:
-                                with sistema.engine.connect() as conn_conf:
-                                    result_conf = conn_conf.execute(text("""
-                                        SELECT COALESCE(AVG(CASE WHEN confianza > 0 THEN confianza END), 0) as confianza_prom
-                                        FROM resultados_normalizacion 
-                                        WHERE id_archivo = :id_archivo
-                                    """), {'id_archivo': archivo['id_archivo']})
-                                    
-                                    conf_row = result_conf.fetchone()
-                                    if conf_row and conf_row[0] > 0:
-                                        confianza = float(conf_row[0]) * 100
-                                        st.info(f"🎯 **Confianza:** {confianza:.1f}%")
-                                    else:
-                                        fecha_formato = pd.to_datetime(archivo['fecha_carga']).strftime('%d/%m/%Y %H:%M')
-                                        st.info(f"📅 **Procesado:** {fecha_formato}")
-                            except:
-                                fecha_formato = pd.to_datetime(archivo['fecha_carga']).strftime('%d/%m/%Y %H:%M')
-                                st.info(f"📅 **Procesado:** {fecha_formato}")
-                    
-                    else:
-                        # Para archivos en proceso
-                        st.info(f"⏳ **Estado:** {archivo['estado_procesamiento']}")
-        
+                    with col3:
+                        if archivo['estado_procesamiento'] == 'COMPLETADO':
+                            if st.button(f"🗑️ Eliminar", key=f"del_{archivo['id_archivo']}"):
+                                eliminar_archivo_procesado(archivo['id_archivo'])
         else:
             st.info("📋 No hay archivos procesados recientemente")
             
@@ -2664,7 +1889,7 @@ def cargar_nueva_referencia(df_ref, tipo_ref, fuente_ref, nombre_archivo):
         st.error(f"Error cargando referencia: {str(e)}")
 
 def mostrar_resultados_archivo(id_archivo):
-    """Mostrar resultados detallados de un archivo procesado - RESPONSIVO"""
+    """Mostrar resultados detallados de un archivo procesado - CORREGIDO"""
     
     sistema = SistemaNormalizacion()
     
@@ -2675,6 +1900,7 @@ def mostrar_resultados_archivo(id_archivo):
                 SELECT * FROM archivos_cargados WHERE id_archivo = :id_archivo
             """), {'id_archivo': id_archivo})
             
+            # CORRECCIÓN: Verificar que existe el archivo
             archivo_row = result.fetchone()
             if archivo_row is None:
                 st.error("❌ No se encontró el archivo especificado.")
@@ -2717,7 +1943,7 @@ def mostrar_resultados_archivo(id_archivo):
             with col4:
                 st.metric("Confianza Promedio", f"{confianza_prom:.1%}" if confianza_prom > 0 else "N/A")
             
-            # Tabla de resultados RESPONSIVA
+            # Tabla de resultados (resto del código igual...)
             df_resultados = pd.DataFrame(resultados)
             
             # Seleccionar columnas principales para mostrar
@@ -2733,74 +1959,15 @@ def mostrar_resultados_archivo(id_archivo):
             
             # Renombrar columnas para mejor presentación
             df_display = df_display.rename(columns={
-                'texto_original': 'Original',
-                'valor_normalizado': 'Normalizado',
-                'metodo_usado': 'Método',
-                'confianza': 'Confianza',
-                'requiere_revision': 'Revisión',
-                'fecha_proceso': 'Fecha'
+                'texto_original': '📝 Original',
+                'valor_normalizado': '✅ Normalizado',
+                'metodo_usado': '⚙️ Método',
+                'confianza': '🎯 Confianza',
+                'requiere_revision': '👀 Revisión',
+                'fecha_proceso': '📅 Fecha'
             })
             
-            # CONFIGURACIÓN RESPONSIVA AVANZADA
-            st.dataframe(
-                df_display, 
-                use_container_width=True, 
-                hide_index=True, 
-                height=400,
-                column_config={
-                    "Original": st.column_config.TextColumn(
-                        "Original",
-                        help="Texto original de AS400",
-                        width="medium",
-                        max_chars=50
-                    ),
-                    "Normalizado": st.column_config.TextColumn(
-                        "Normalizado", 
-                        help="Texto normalizado con SEPOMEX",
-                        width="medium",
-                        max_chars=50
-                    ),
-                    "Método": st.column_config.TextColumn(
-                        "Método",
-                        help="Algoritmo usado para normalización",
-                        width="small"
-                    ),
-                    "Confianza": st.column_config.TextColumn(
-                        "Confianza",
-                        help="Nivel de confianza del resultado",
-                        width="small"
-                    ),
-                    "Revisión": st.column_config.TextColumn(
-                        "Revisión",
-                        help="Indica si requiere validación manual",
-                        width="small"
-                    ),
-                    "Fecha": st.column_config.TextColumn(
-                        "Fecha",
-                        help="Fecha y hora de procesamiento",
-                        width="small"
-                    )
-                }
-            )
-            
-            # VISTA MÓVIL ALTERNATIVA
-            if st.checkbox("📱 Vista Móvil Compacta", help="Activa para pantallas pequeñas"):
-                st.markdown("### 📋 Vista Compacta")
-                
-                # Mostrar solo datos esenciales en formato de cards
-                for idx, row in df_display.head(10).iterrows():  # Solo primeros 10 en vista móvil
-                    with st.expander(f"📄 {row['Original'][:30]}..."):
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write(f"**Original:** {row['Original']}")
-                            st.write(f"**Método:** {row['Método']}")
-                            st.write(f"**Fecha:** {row['Fecha']}")
-                        
-                        with col2:
-                            st.write(f"**Normalizado:** {row['Normalizado']}")
-                            st.write(f"**Confianza:** {row['Confianza']}")
-                            st.write(f"**Revisión:** {row['Revisión']}")
+            st.dataframe(df_display, use_container_width=True, hide_index=True, height=400)
             
             # Botón para descargar resultados
             csv_export = df_resultados.to_csv(index=False)
@@ -2822,58 +1989,25 @@ def mostrar_configuracion_sistema():
     
     st.markdown("## ⚙️ Configuración del Sistema")
     
-    usuario_actual = st.session_state.get('usuario_actual', {})
-    rol_usuario = usuario_actual.get('rol', 'USUARIO')
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "🗄️ Base de Datos", 
+        "📚 Referencias", 
+        "🧹 Mantenimiento", 
+        "📊 Estadísticas"
+    ])
     
-    # Tabs diferentes según el rol
-    if rol_usuario == 'SUPERUSUARIO':
-        # SUPERUSUARIO: Ve todo
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "🗄️ Base de Datos", 
-            "📚 Referencias", 
-            "🧹 Mantenimiento", 
-            "📊 Estadísticas"
-        ])
-        
-        with tab1:
-            mostrar_config_base_datos()  # Con parámetros del sistema
-        
-        with tab2:
-            mostrar_gestion_referencias()
-        
-        with tab3:
-            mostrar_mantenimiento_sistema()
-        
-        with tab4:
-            mostrar_estadisticas_sistema()
+    with tab1:
+        mostrar_config_base_datos()
     
-    elif rol_usuario == 'GERENTE':
-        # GERENTE: Sin parámetros técnicos
-        tab1, tab2, tab3 = st.tabs([
-            "🗄️ Base de Datos", 
-            "📚 Referencias", 
-            "📊 Estadísticas"
-        ])
-        
-        with tab1:
-            mostrar_config_base_datos()  # Sin parámetros del sistema
-        
-        with tab2:
-            mostrar_gestion_referencias()
-        
-        with tab3:
-            mostrar_estadisticas_sistema()
+    with tab2:
+        mostrar_gestion_referencias()
     
-    else:
-        # USUARIO: Acceso muy limitado
-        st.error("❌ No tienes permisos para acceder a la configuración del sistema")
-        st.info("""
-        👤 **Acceso de Usuario:**
-        
-        La configuración del sistema está restringida a administradores.
-        
-        📞 **¿Necesitas cambiar algo?** Contacta a un gerente o administrador.
-        """)
+    with tab3:
+        mostrar_mantenimiento_sistema()
+    
+    with tab4:
+        mostrar_estadisticas_sistema()
+
 # ========================================
 # CORRECCIÓN ADICIONAL PARA OTRAS FUNCIONES SIMILARES
 # ========================================
@@ -2884,10 +2018,8 @@ def mostrar_config_base_datos():
     st.markdown("### 🗄️ Configuración de PostgreSQL")
     
     sistema = SistemaNormalizacion()
-    usuario_actual = st.session_state.get('usuario_actual', {})
-    rol_usuario = usuario_actual.get('rol', 'USUARIO')
     
-    # Estado de conexión (todos pueden ver esto)
+    # Estado de conexión
     if sistema.engine:
         st.success("✅ Conexión a PostgreSQL activa")
         
@@ -2897,6 +2029,7 @@ def mostrar_config_base_datos():
                 result = conn.execute(text("SELECT version()"))
                 version_row = result.fetchone()
                 version = version_row[0] if version_row else "Desconocida"
+                
                 
                 result = conn.execute(text("""
                     SELECT 
@@ -2910,13 +2043,14 @@ def mostrar_config_base_datos():
                     ORDER BY relname
                 """))
 
+
                 # CORRECCIÓN: Manejar resultados correctamente
                 tablas_stats = []
                 for row in result:
                     if row is not None:
                         tablas_stats.append(dict(row._mapping))
             
-            # Mostrar información básica (todos pueden ver)
+            # Mostrar información
             st.info(f"**Versión PostgreSQL:** {version}")
             
             if tablas_stats:
@@ -2955,13 +2089,23 @@ def mostrar_config_base_datos():
         ```
         """)
     
+    # Configuración de parámetros
     st.markdown("---")
+    st.markdown("#### ⚙️ Parámetros del Sistema:")
     
-    # CONTROL DE ACCESO: Solo SUPERUSUARIOS ven parámetros del sistema
-    if rol_usuario == 'SUPERUSUARIO':
-        mostrar_parametros_sistema_admin()
-    else:
-        mostrar_mensaje_permisos_parametros(rol_usuario)
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        batch_size = st.number_input("Tamaño de lote para procesamiento:", value=1000, min_value=100, max_value=10000)
+        timeout_seconds = st.number_input("Timeout de consultas (segundos):", value=30, min_value=5, max_value=300)
+    
+    with col2:
+        max_workers = st.number_input("Número máximo de hilos:", value=4, min_value=1, max_value=16)
+        cache_ttl = st.number_input("TTL de cache (segundos):", value=300, min_value=60, max_value=3600)
+    
+    if st.button("💾 Guardar Configuración"):
+        # En una implementación real, esto se guardaría en una tabla de configuración
+        st.success("✅ Configuración guardada correctamente")
 
 def mostrar_gestion_referencias():
     """Gestión completa de referencias"""
@@ -3088,9 +2232,9 @@ def mostrar_mantenimiento_sistema():
 
 def mostrar_dashboard_principal():
     """Dashboard principal con métricas del sistema completo - COMPLETAMENTE CORREGIDO"""
-   
+    
     st.markdown("## 📊 Dashboard Principal")
-
+    
     sistema = SistemaNormalizacion()
     
     try:
@@ -3529,8 +2673,7 @@ def mostrar_estadisticas_sistema():
 # 8. APLICACIÓN PRINCIPAL
 # ========================================
 
-#def main():
-def main_aplicacion_original():
+def main():
     """Aplicación principal del sistema integral"""
     
     # Aplicar estilos CSS
@@ -3567,64 +2710,32 @@ def main_aplicacion_original():
     """, unsafe_allow_html=True)
     
     # Header principal
-    col_logo, col_title = st.columns([1, 8])
-    with col_logo:
-        try:
-            st.image("logo_RN.png", width=120)
-        except:
-            st.markdown("🏠")
-    with col_title:
-        st.markdown("""
-        <div  style="text-align: left;">
-            <h3>Red Nacional Última Milla</h3>
-            <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
-        </div>
-        """, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="main-header">
+        <h1>🏠 Red Nacional</h1>
+        <p>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios | AS400 ↔ PostgreSQL</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # NAVEGACIÓN PRINCIPAL CON CONTROL POR ROL
-    # Obtener rol del usuario actual
-    usuario_actual = st.session_state.get('usuario_actual', {})
-    rol_usuario = usuario_actual.get('rol', 'USUARIO')
+    # Navegación principal
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 Dashboard", 
+        "📁 Carga de Archivos", 
+        "📋 Resultados", 
+        "⚙️ Configuración"
+    ])
     
-    # Definir pestañas según el rol
-    if rol_usuario in ['SUPERUSUARIO', 'GERENTE']:
-        # ADMINISTRADORES: Ven todas las pestañas
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "📊 Dashboard", 
-            "📁 Carga de Archivos", 
-            "📋 Resultados", 
-            "⚙️ Configuración"
-        ])
-        
-        with tab1:
-            mostrar_dashboard_principal()
-        
-        with tab2:
-            mostrar_interfaz_carga()
-        
-        with tab3:
-            mostrar_seccion_resultados()
-        
-        with tab4:
-            mostrar_configuracion_sistema()
+    with tab1:
+        mostrar_dashboard_principal()
     
-    else:
-        # USUARIOS NORMALES: Solo ven 3 pestañas
-        tab1, tab2, tab3 = st.tabs([
-            "📊 Dashboard", 
-            "📁 Carga de Archivos", 
-            "📋 Resultados"
-        ])
-        
-        with tab1:
-            mostrar_dashboard_principal()
-        
-        with tab2:
-            # Los usuarios pueden ver la interfaz pero con funciones limitadas
-            mostrar_interfaz_carga_limitada()
-        
-        with tab3:
-            mostrar_seccion_resultados()
+    with tab2:
+        mostrar_interfaz_carga()
+    
+    with tab3:
+        mostrar_seccion_resultados()
+    
+    with tab4:
+        mostrar_configuracion_sistema()
 
 def mostrar_seccion_resultados():
     """Sección para consultar y analizar resultados históricos"""
@@ -3968,7 +3079,7 @@ def actualizar_estadisticas_bd(sistema):
 
     
 def descargar_resultados_archivo(id_archivo):
-    """Generar descarga de resultados de un archivo - CORREGIDO"""
+    """Generar descarga de resultados de un archivo"""
 
     sistema = SistemaNormalizacion()
 
@@ -3980,13 +3091,7 @@ def descargar_resultados_archivo(id_archivo):
                 FROM archivos_cargados WHERE id_archivo = :id_archivo
             """), {'id_archivo': id_archivo})
             
-            # CORRECCIÓN: Manejar correctamente el resultado
-            archivo_row = result.fetchone()
-            if archivo_row is None:
-                st.error("❌ No se encontró el archivo especificado.")
-                return
-                
-            archivo_info = dict(archivo_row._mapping)
+            archivo_info = dict(result.fetchone())
             
             # Obtener resultados
             result = conn.execute(text("""
@@ -4000,379 +3105,109 @@ def descargar_resultados_archivo(id_archivo):
                 ORDER BY fecha_proceso
             """), {'id_archivo': id_archivo})
             
-            # CORRECCIÓN: Convertir correctamente a lista de diccionarios
-            resultados = []
-            for row in result:
-                if row is not None:
-                    resultados.append(dict(row._mapping))
+            resultados = [dict(row) for row in result]
         
-        if not resultados:
-            st.warning("No hay resultados para descargar")
-            return
-        
-        # Crear DataFrames para diferentes formatos
-        df_completo = pd.DataFrame(resultados)
-        
-        # Verificar que las columnas existan antes de usarlas
-        columnas_as400 = ['campo_status', 'campo_clave', 'valor_normalizado', 'codigo_normalizado']
-        columnas_disponibles = [col for col in columnas_as400 if col in df_completo.columns]
-        
-        if not columnas_disponibles:
-            st.error("❌ No se encontraron las columnas necesarias para generar el archivo AS400")
-            return
-        
-        # Formato para AS400 (solo campos disponibles)
-        df_as400 = df_completo[columnas_disponibles].copy()
-        
-        # Renombrar columnas para AS400
-        nombres_as400 = {
-            'campo_status': 'STATUS',
-            'campo_clave': 'CLAVE_ORIGINAL', 
-            'valor_normalizado': 'DESCRIPCION_NORMALIZADA',
-            'codigo_normalizado': 'CODIGO_NORMALIZADO'
-        }
-        
-        df_as400 = df_as400.rename(columns={k: v for k, v in nombres_as400.items() if k in df_as400.columns})
-        
-        # Formato para revisión manual (solo casos que requieren revisión)
-        if 'requiere_revision' in df_completo.columns:
+        if resultados:
+            # Crear DataFrames para diferentes formatos
+            df_completo = pd.DataFrame(resultados)
+            
+            # Formato para AS400 (solo campos necesarios)
+            df_as400 = df_completo[['campo_status', 'campo_clave', 'valor_normalizado', 'codigo_normalizado']].copy()
+            df_as400.columns = ['STATUS', 'CLAVE_ORIGINAL', 'DESCRIPCION_NORMALIZADA', 'CODIGO_NORMALIZADO']
+            
+            # Formato para revisión manual (solo casos que requieren revisión)
             df_revision = df_completo[df_completo['requiere_revision'] == True].copy()
-        else:
-            df_revision = pd.DataFrame()  # DataFrame vacío si no existe la columna
-        
-        # Crear archivo ZIP con múltiples formatos
-        zip_buffer = io.BytesIO()
-        
-        with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-            # Archivo completo
-            csv_completo = df_completo.to_csv(index=False)
-            zip_file.writestr(f"{archivo_info['nombre_archivo']}_completo.csv", csv_completo)
             
-            # Archivo para AS400
-            csv_as400 = df_as400.to_csv(index=False)
-            zip_file.writestr(f"{archivo_info['nombre_archivo']}_as400.csv", csv_as400)
+            # Crear archivo ZIP con múltiples formatos
+            zip_buffer = io.BytesIO()
             
-            # Archivo de casos para revisión (solo si hay datos)
-            if not df_revision.empty:
-                csv_revision = df_revision.to_csv(index=False)
-                zip_file.writestr(f"{archivo_info['nombre_archivo']}_revision.csv", csv_revision)
-            
-            # Reporte de resumen
-            total_registros = len(resultados)
-            registros_exitosos = len(df_completo[df_completo['valor_normalizado'].notna()]) if 'valor_normalizado' in df_completo.columns else 0
-            requieren_revision = len(df_revision)
-            
-            # Calcular confianza promedio de manera segura
-            if 'confianza' in df_completo.columns:
-                confianzas_validas = df_completo['confianza'].dropna()
-                confianza_promedio = confianzas_validas.mean() if len(confianzas_validas) > 0 else 0
-            else:
-                confianza_promedio = 0
-            
-            # Distribución de métodos de manera segura
-            if 'metodo_usado' in df_completo.columns:
-                distribucion_metodos = df_completo['metodo_usado'].value_counts().to_string()
-            else:
-                distribucion_metodos = "No disponible"
-            
-            resumen = f"""
+            with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                # Archivo completo
+                csv_completo = df_completo.to_csv(index=False)
+                zip_file.writestr(f"{archivo_info['nombre_archivo']}_completo.csv", csv_completo)
+                
+                # Archivo para AS400
+                csv_as400 = df_as400.to_csv(index=False)
+                zip_file.writestr(f"{archivo_info['nombre_archivo']}_as400.csv", csv_as400)
+                
+                # Archivo de casos para revisión
+                if not df_revision.empty:
+                    csv_revision = df_revision.to_csv(index=False)
+                    zip_file.writestr(f"{archivo_info['nombre_archivo']}_revision.csv", csv_revision)
+                
+                # Reporte de resumen
+                resumen = f"""
+
 REPORTE DE PROCESAMIENTO
 ========================
 
 Archivo: {archivo_info['nombre_archivo']}
-Tipo: {archivo_info.get('tipo_catalogo', 'N/A')}
-División: {archivo_info.get('division', 'N/A')}
+Tipo: {archivo_info['tipo_catalogo']}
+División: {archivo_info['division']}
 Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ESTADÍSTICAS:
-- Total de registros: {total_registros:,}
-- Registros exitosos: {registros_exitosos:,}
-- Requieren revisión: {requieren_revision:,}
-- Confianza promedio: {confianza_promedio:.1%}
+- Total de registros: {len(resultados):,}
+- Registros exitosos: {len(df_completo[df_completo['valor_normalizado'].notna()]):,}
+- Requieren revisión: {len(df_revision):,}
+- Confianza promedio: {df_completo['confianza'].mean():.1%}
 
 MÉTODOS UTILIZADOS:
-{distribucion_metodos}
+{df_completo['metodo_usado'].value_counts().to_string()}
 
 ARCHIVOS INCLUIDOS:
 - {archivo_info['nombre_archivo']}_completo.csv: Todos los resultados
 - {archivo_info['nombre_archivo']}_as400.csv: Formato para cargar en AS400
-""" + (f"- {archivo_info['nombre_archivo']}_revision.csv: Casos que requieren revisión manual\n" if not df_revision.empty else "")
+- {archivo_info['nombre_archivo']}_revision.csv: Casos que requieren revisión manual
+                """
+                
+                zip_file.writestr(f"{archivo_info['nombre_archivo']}_reporte.txt", resumen)
             
-            zip_file.writestr(f"{archivo_info['nombre_archivo']}_reporte.txt", resumen)
+            # Preparar descarga
+            zip_buffer.seek(0)
+            
+            nombre_descarga = f"resultados_{archivo_info['tipo_catalogo']}_{archivo_info['division']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+            
+            st.download_button(
+                label="📥 Descargar Resultados Completos",
+                data=zip_buffer.getvalue(),
+                file_name=nombre_descarga,
+                mime="application/zip"
+            )
+            
+            st.success(f"✅ Preparado para descarga: {len(resultados):,} registros")
         
-        # Preparar descarga
-        zip_buffer.seek(0)
-        
-        nombre_descarga = f"resultados_{archivo_info.get('tipo_catalogo', 'datos')}_{archivo_info.get('division', 'general')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-        
-        st.download_button(
-            label="📥 Descargar Resultados Completos",
-            data=zip_buffer.getvalue(),
-            file_name=nombre_descarga,
-            mime="application/zip"
-        )
-        
-        st.success(f"✅ Preparado para descarga: {len(resultados):,} registros")
-        
+        else:
+            st.warning("No hay resultados para descargar")
+    
     except Exception as e:
         st.error(f"Error preparando descarga: {str(e)}")
-        # Debug adicional
-        st.code(f"""
-Detalles del error:
-- Función: descargar_resultados_archivo()
-- ID Archivo: {id_archivo}
-- Error específico: {str(e)}
-- Tipo de error: {type(e).__name__}
-        """)
 
 def eliminar_archivo_procesado(id_archivo):
-    """Eliminar archivo procesado y sus resultados - FUNCIÓN CORREGIDA"""
+    """Eliminar archivo procesado y sus resultados"""
     
-    # ⚠️ IMPORTANTE: Usar st.session_state para evitar recrear el sistema
-    if 'sistema_normalizacion' not in st.session_state:
-        st.session_state.sistema_normalizacion = SistemaNormalizacion()
+    sistema = SistemaNormalizacion()
     
-    sistema = st.session_state.sistema_normalizacion
-    
-    # Crear un único checkbox por archivo
-    checkbox_key = f"confirm_delete_{id_archivo}"
-    
-    if st.checkbox("⚠️ Confirmar eliminación (esta acción no se puede deshacer)", key=checkbox_key):
+    if st.checkbox("Confirmar eliminación", key=f"confirm_del_{id_archivo}"):
         try:
             with sistema.engine.connect() as conn:
-                # Primero obtener información del archivo para mostrarla
-                result = conn.execute(text("""
-                    SELECT nombre_archivo, tipo_catalogo, division 
-                    FROM archivos_cargados 
-                    WHERE id_archivo = :id_archivo
+                # Eliminar resultados
+                conn.execute(text("""
+                    DELETE FROM resultados_normalizacion WHERE id_archivo = :id_archivo
                 """), {'id_archivo': id_archivo})
                 
-                archivo_info = result.fetchone()
-                if not archivo_info:
-                    st.error("❌ Archivo no encontrado")
-                    return
-                
-                archivo_data = dict(archivo_info._mapping)
-                
-                # Contar registros que se van a eliminar
-                result = conn.execute(text("""
-                    SELECT COUNT(*) as total_resultados
-                    FROM resultados_normalizacion 
-                    WHERE id_archivo = :id_archivo
+                # Eliminar registro del archivo
+                conn.execute(text("""
+                    DELETE FROM archivos_cargados WHERE id_archivo = :id_archivo
                 """), {'id_archivo': id_archivo})
                 
-                total_resultados = result.fetchone()[0]
-                
-                # Mostrar información de lo que se va a eliminar
-                st.warning(f"""
-                **Se eliminará:**
-                - 📄 Archivo: {archivo_data['nombre_archivo']}
-                - 📋 Tipo: {archivo_data['tipo_catalogo']}
-                - 🏢 División: {archivo_data['division']}
-                - 📊 Resultados: {total_resultados:,} registros
-                """)
-                
-                # Botón final de confirmación
-                if st.button(f"🗑️ ELIMINAR DEFINITIVAMENTE", key=f"final_delete_{id_archivo}", type="primary"):
-                    
-                    # Eliminar resultados primero (por clave foránea)
-                    result_delete = conn.execute(text("""
-                        DELETE FROM resultados_normalizacion 
-                        WHERE id_archivo = :id_archivo
-                    """), {'id_archivo': id_archivo})
-                    
-                    resultados_eliminados = result_delete.rowcount
-                    
-                    # Eliminar registro del archivo
-                    archivo_delete = conn.execute(text("""
-                        DELETE FROM archivos_cargados 
-                        WHERE id_archivo = :id_archivo
-                    """), {'id_archivo': id_archivo})
-                    
-                    archivos_eliminados = archivo_delete.rowcount
-                    
-                    # Confirmar transacción
-                    conn.commit()
-                    
-                    # Mostrar resultado
-                    if archivos_eliminados > 0:
-                        st.success(f"""
-                        ✅ **Eliminación completada:**
-                        - 📄 Archivo eliminado: {archivo_data['nombre_archivo']}
-                        - 📊 Resultados eliminados: {resultados_eliminados:,}
-                        - 🔄 Recarga la página para ver los cambios
-                        """)
-                        
-                        # Forzar recarga después de 2 segundos
-                        st.rerun()
-                        
-                    else:
-                        st.error("❌ No se pudo eliminar el archivo")
+                conn.commit()
+            
+            st.success("✅ Archivo eliminado correctamente")
+            st.rerun()
         
         except Exception as e:
-            st.error(f"❌ Error eliminando archivo: {str(e)}")
-            
-            # Mostrar detalles técnicos para debug
-            with st.expander("🔧 Detalles técnicos del error"):
-                st.code(f"""
-Error específico: {str(e)}
-Tipo de error: {type(e).__name__}
-ID Archivo: {id_archivo}
-                """)
-    else:
-        st.info("👆 Marca la casilla de confirmación para continuar con la eliminación")
-
-
-# ========================================
-# FUNCIÓN ALTERNATIVA MÁS SEGURA
-# ========================================
-
-def eliminar_archivo_procesado_seguro(id_archivo):
-    """Versión más segura de eliminación con pasos claros"""
-    
-    # Usar sistema global si existe
-    if 'sistema_global' in st.session_state:
-        sistema = st.session_state.sistema_global
-    else:
-        # Crear sistema solo si no existe
-        sistema = SistemaNormalizacion()
-    
-    st.markdown(f"### 🗑️ Eliminar Archivo")
-    st.markdown(f"**ID:** `{id_archivo}`")
-    
-    try:
-        # PASO 1: Mostrar información del archivo
-        with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT a.nombre_archivo, a.tipo_catalogo, a.division, a.total_registros,
-                       COUNT(r.id_resultado) as resultados_procesados
-                FROM archivos_cargados a
-                LEFT JOIN resultados_normalizacion r ON a.id_archivo = r.id_archivo
-                WHERE a.id_archivo = :id_archivo
-                GROUP BY a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division, a.total_registros
-            """), {'id_archivo': id_archivo})
-            
-            archivo_info = result.fetchone()
-            
-            if not archivo_info:
-                st.error("❌ Archivo no encontrado en la base de datos")
-                return
-            
-            info = dict(archivo_info._mapping)
-        
-        # Mostrar información detallada
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.info(f"""
-            **📄 Archivo:** {info['nombre_archivo']}  
-            **📋 Tipo:** {info['tipo_catalogo']}  
-            **🏢 División:** {info['division']}
-            """)
-        
-        with col2:
-            st.info(f"""
-            **📊 Registros originales:** {info['total_registros']:,}  
-            **🔄 Resultados procesados:** {info['resultados_procesados']:,}
-            """)
-        
-        # PASO 2: Confirmaciones
-        st.markdown("#### ⚠️ Confirmación de Eliminación")
-        
-        confirmar1 = st.checkbox(
-            f"✅ Entiendo que se eliminará el archivo **{info['nombre_archivo']}**",
-            key=f"conf1_{id_archivo}"
-        )
-        
-        confirmar2 = st.checkbox(
-            f"✅ Entiendo que se eliminarán **{info['resultados_procesados']:,} resultados** procesados",
-            key=f"conf2_{id_archivo}"
-        )
-        
-        confirmar3 = st.checkbox(
-            "✅ Entiendo que **esta acción NO se puede deshacer**",
-            key=f"conf3_{id_archivo}"
-        )
-        
-        # PASO 3: Botón de eliminación (solo si todas las confirmaciones están marcadas)
-        if confirmar1 and confirmar2 and confirmar3:
-            
-            if st.button(
-                f"🗑️ ELIMINAR ARCHIVO DEFINITIVAMENTE", 
-                key=f"delete_final_{id_archivo}",
-                type="primary"
-            ):
-                
-                # Mostrar progreso
-                progress = st.progress(0)
-                status = st.empty()
-                
-                try:
-                    with sistema.engine.connect() as conn:
-                        # Paso 1: Eliminar resultados
-                        status.text("🔄 Eliminando resultados de normalización...")
-                        progress.progress(0.3)
-                        
-                        result = conn.execute(text("""
-                            DELETE FROM resultados_normalizacion 
-                            WHERE id_archivo = :id_archivo
-                        """), {'id_archivo': id_archivo})
-                        
-                        resultados_eliminados = result.rowcount
-                        
-                        # Paso 2: Eliminar archivo
-                        status.text("🔄 Eliminando registro del archivo...")
-                        progress.progress(0.6)
-                        
-                        result = conn.execute(text("""
-                            DELETE FROM archivos_cargados 
-                            WHERE id_archivo = :id_archivo
-                        """), {'id_archivo': id_archivo})
-                        
-                        archivos_eliminados = result.rowcount
-                        
-                        # Paso 3: Confirmar transacción
-                        status.text("🔄 Confirmando eliminación...")
-                        progress.progress(0.9)
-                        
-                        conn.commit()
-                        
-                        # Finalizar
-                        progress.progress(1.0)
-                        status.text("✅ Eliminación completada")
-                        
-                        # Mostrar resultado final
-                        st.success(f"""
-                        ### ✅ Eliminación Exitosa
-                        
-                        **Elementos eliminados:**
-                        - 📄 **Archivo:** {info['nombre_archivo']}
-                        - 📊 **Resultados:** {resultados_eliminados:,} registros
-                        - 🗄️ **Registro de archivo:** {archivos_eliminados} entrada
-                        
-                        **⚡ La página se recargará automáticamente...**
-                        """)
-                        
-                        # Auto-recarga después de mostrar el mensaje
-                        time.sleep(2)
-                        st.rerun()
-                        
-                except Exception as e:
-                    st.error(f"❌ **Error durante la eliminación:** {str(e)}")
-                    
-                    # Log detallado para debugging
-                    st.code(f"""
-DETALLES DEL ERROR:
-- Función: eliminar_archivo_procesado_seguro()
-- ID Archivo: {id_archivo}
-- Error: {str(e)}
-- Tipo: {type(e).__name__}
-                    """)
-        else:
-            st.warning("⚠️ Debes marcar todas las confirmaciones para continuar")
-            
-    except Exception as e:
-        st.error(f"❌ Error consultando información del archivo: {str(e)}")
+            st.error(f"Error eliminando archivo: {str(e)}")
 
 # ========================================
 # FUNCIONES DE PRUEBA ESPECÍFICAS PASO 2
@@ -4655,1116 +3490,13 @@ ORDEN DE EJECUCIÓN:
 5. Analizar resultados y ajustar si es necesario
     """)
 
-# ========================================
-# HERRAMIENTAS DE DIAGNÓSTICO PARA ELIMINACIÓN
-# ========================================
 
-# ========================================
-# DIAGNÓSTICO AVANZADO DE BASE DE DATOS
-# ========================================
-
-def diagnostico_completo_bd():
-    """
-    Diagnóstico completo para identificar problemas de BD
-    """
-    
-    st.markdown("## 🔬 Diagnóstico Avanzado de Base de Datos")
-    
-    if 'sistema_global' not in st.session_state:
-        st.session_state.sistema_global = SistemaNormalizacion()
-    
-    sistema = st.session_state.sistema_global
-    
-    # Test 1: Verificar conexión básica
-    st.markdown("### 1️⃣ Test de Conexión Básica")
-    
-    try:
-        with sistema.engine.connect() as conn:
-            result = conn.execute(text("SELECT 1 as test"))
-            test_result = result.fetchone()[0]
-            
-            if test_result == 1:
-                st.success("✅ Conexión a PostgreSQL OK")
-            else:
-                st.error("❌ Problema en conexión básica")
-                
-    except Exception as e:
-        st.error(f"❌ Error de conexión: {str(e)}")
-        return
-    
-    # Test 2: Verificar permisos de escritura
-    st.markdown("### 2️⃣ Test de Permisos de Escritura")
-    
-    try:
-        with sistema.engine.connect() as conn:
-            # Intentar crear una tabla temporal
-            conn.execute(text("""
-                CREATE TEMPORARY TABLE test_permisos (
-                    id INTEGER,
-                    test_text VARCHAR(50)
-                )
-            """))
-            
-            # Intentar insertar datos
-            conn.execute(text("""
-                INSERT INTO test_permisos (id, test_text) VALUES (1, 'test')
-            """))
-            
-            # Intentar hacer commit
-            conn.commit()
-            
-            # Verificar que se insertó
-            result = conn.execute(text("SELECT COUNT(*) FROM test_permisos"))
-            count = result.fetchone()[0]
-            
-            if count == 1:
-                st.success("✅ Permisos de escritura OK")
-            else:
-                st.error("❌ Problema con permisos de escritura")
-                
-    except Exception as e:
-        st.error(f"❌ Error de permisos: {str(e)}")
-        st.code(f"Error específico: {str(e)}")
-    
-    # Test 3: Verificar estructura de tablas
-    st.markdown("### 3️⃣ Test de Estructura de Tablas")
-    
-    try:
-        with sistema.engine.connect() as conn:
-            # Verificar que las tablas existen
-            result = conn.execute(text("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                AND table_name IN ('archivos_cargados', 'resultados_normalizacion')
-                ORDER BY table_name
-            """))
-            
-            tablas = [row[0] for row in result]
-            
-            st.write("**Tablas encontradas:**")
-            for tabla in tablas:
-                st.success(f"✅ {tabla}")
-            
-            if 'archivos_cargados' not in tablas:
-                st.error("❌ Falta tabla 'archivos_cargados'")
-            if 'resultados_normalizacion' not in tablas:
-                st.error("❌ Falta tabla 'resultados_normalizacion'")
-                
-    except Exception as e:
-        st.error(f"❌ Error verificando tablas: {str(e)}")
-    
-    # Test 4: Test de DELETE directo
-    st.markdown("### 4️⃣ Test de DELETE Directo")
-    
-    if st.button("🧪 Probar DELETE Directo"):
-        try:
-            with sistema.engine.connect() as conn:
-                
-                # Primero crear un registro de prueba
-                st.info("Creando registro de prueba...")
-                
-                test_id = f"test-{int(time.time())}"
-                
-                conn.execute(text("""
-                    INSERT INTO archivos_cargados 
-                    (id_archivo, nombre_archivo, tipo_catalogo, division, total_registros)
-                    VALUES (:id, 'test_file.csv', 'ESTADOS', 'TEST', 10)
-                """), {'id': test_id})
-                
-                conn.commit()
-                st.success("✅ Registro de prueba creado")
-                
-                # Verificar que se creó
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': test_id})
-                
-                count_antes = result.fetchone()[0]
-                st.write(f"Registros antes del DELETE: {count_antes}")
-                
-                # Intentar eliminarlo
-                st.info("Intentando DELETE...")
-                
-                delete_result = conn.execute(text("""
-                    DELETE FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': test_id})
-                
-                registros_eliminados = delete_result.rowcount
-                st.write(f"Registros que reporta haber eliminado: {registros_eliminados}")
-                
-                # CRÍTICO: Hacer commit
-                conn.commit()
-                st.info("✅ COMMIT ejecutado")
-                
-                # Verificar que se eliminó
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': test_id})
-                
-                count_despues = result.fetchone()[0]
-                st.write(f"Registros después del DELETE: {count_despues}")
-                
-                if count_despues == 0:
-                    st.success("🎉 **DELETE FUNCIONA CORRECTAMENTE**")
-                    st.success("El problema NO es la función DELETE")
-                else:
-                    st.error("❌ **DELETE NO FUNCIONA**")
-                    st.error("Hay un problema fundamental con los permisos o la BD")
-                    
-        except Exception as e:
-            st.error(f"❌ Error en test DELETE: {str(e)}")
-            st.code(f"""
-ERROR COMPLETO:
-{str(e)}
-
-Tipo: {type(e).__name__}
-""")
-    
-    # Test 5: Información de la sesión de BD
-    st.markdown("### 5️⃣ Información de Sesión de BD")
-    
-    try:
-        with sistema.engine.connect() as conn:
-            # Usuario actual
-            result = conn.execute(text("SELECT current_user"))
-            usuario = result.fetchone()[0]
-            st.info(f"**Usuario conectado:** {usuario}")
-            
-            # Base de datos actual
-            result = conn.execute(text("SELECT current_database()"))
-            database = result.fetchone()[0]
-            st.info(f"**Base de datos:** {database}")
-            
-            # Configuración de autocommit
-            result = conn.execute(text("SHOW autocommit"))
-            autocommit = result.fetchone()[0]
-            st.info(f"**Autocommit:** {autocommit}")
-            
-            # Transacciones activas
-            result = conn.execute(text("""
-                SELECT COUNT(*) FROM pg_stat_activity 
-                WHERE datname = current_database() AND state = 'active'
-            """))
-            transacciones = result.fetchone()[0]
-            st.info(f"**Transacciones activas:** {transacciones}")
-            
-    except Exception as e:
-        st.error(f"❌ Error obteniendo info de sesión: {str(e)}")
-
-
-def test_eliminacion_con_logs(id_archivo):
-    """
-    Test de eliminación con logging detallado paso a paso
-    """
-    
-    st.markdown("### 🔬 Test de Eliminación con Logs Detallados")
-    st.markdown(f"**ID del archivo:** `{id_archivo}`")
-    
-    if st.button("🚀 Ejecutar Test Detallado", key=f"test_detailed_{id_archivo}"):
-        
-        if 'sistema_global' not in st.session_state:
-            st.session_state.sistema_global = SistemaNormalizacion()
-        
-        sistema = st.session_state.sistema_global
-        
-        logs = []
-        
-        try:
-            logs.append("🔄 Iniciando test de eliminación...")
-            st.write(logs[-1])
-            
-            with sistema.engine.connect() as conn:
-                
-                # LOG: Estado inicial
-                logs.append("📊 Consultando estado inicial...")
-                st.write(logs[-1])
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                archivos_inicial = result.fetchone()[0]
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM resultados_normalizacion WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                resultados_inicial = result.fetchone()[0]
-                
-                logs.append(f"📋 Estado inicial: {archivos_inicial} archivos, {resultados_inicial} resultados")
-                st.write(logs[-1])
-                
-                if archivos_inicial == 0 and resultados_inicial == 0:
-                    st.warning("⚠️ El archivo ya no existe en la base de datos")
-                    return
-                
-                # LOG: Iniciando transacción
-                logs.append("🔄 Iniciando transacción de eliminación...")
-                st.write(logs[-1])
-                
-                # STEP 1: Eliminar resultados
-                logs.append("🗑️ Ejecutando DELETE en resultados_normalizacion...")
-                st.write(logs[-1])
-                
-                delete_result1 = conn.execute(text("""
-                    DELETE FROM resultados_normalizacion WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                
-                eliminados_resultados = delete_result1.rowcount
-                logs.append(f"✅ DELETE resultados reporta: {eliminados_resultados} eliminados")
-                st.write(logs[-1])
-                
-                # STEP 2: Eliminar archivo
-                logs.append("🗑️ Ejecutando DELETE en archivos_cargados...")
-                st.write(logs[-1])
-                
-                delete_result2 = conn.execute(text("""
-                    DELETE FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                
-                eliminados_archivos = delete_result2.rowcount
-                logs.append(f"✅ DELETE archivos reporta: {eliminados_archivos} eliminados")
-                st.write(logs[-1])
-                
-                # STEP 3: Verificar antes del commit
-                logs.append("🔍 Verificando estado ANTES del commit...")
-                st.write(logs[-1])
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                archivos_pre_commit = result.fetchone()[0]
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM resultados_normalizacion WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                resultados_pre_commit = result.fetchone()[0]
-                
-                logs.append(f"📋 Pre-commit: {archivos_pre_commit} archivos, {resultados_pre_commit} resultados")
-                st.write(logs[-1])
-                
-                # STEP 4: COMMIT CRÍTICO
-                logs.append("💾 Ejecutando COMMIT...")
-                st.write(logs[-1])
-                
-                conn.commit()
-                
-                logs.append("✅ COMMIT ejecutado exitosamente")
-                st.write(logs[-1])
-                
-                # STEP 5: Verificar después del commit
-                logs.append("🔍 Verificando estado DESPUÉS del commit...")
-                st.write(logs[-1])
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                archivos_final = result.fetchone()[0]
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM resultados_normalizacion WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                resultados_final = result.fetchone()[0]
-                
-                logs.append(f"📋 Estado final: {archivos_final} archivos, {resultados_final} resultados")
-                st.write(logs[-1])
-                
-                # RESULTADO FINAL
-                if archivos_final == 0 and resultados_final == 0:
-                    st.success("🎉 **ELIMINACIÓN EXITOSA**")
-                    logs.append("🎉 ELIMINACIÓN COMPLETADA EXITOSAMENTE")
-                else:
-                    st.error("❌ **ELIMINACIÓN FALLÓ**")
-                    logs.append(f"❌ ELIMINACIÓN FALLÓ - Quedan {archivos_final} archivos y {resultados_final} resultados")
-                
-                st.write(logs[-1])
-                
-                # Mostrar resumen de logs
-                st.markdown("### 📝 Log Completo:")
-                for i, log in enumerate(logs, 1):
-                    st.text(f"{i:2d}. {log}")
-        
-        except Exception as e:
-            logs.append(f"❌ ERROR: {str(e)}")
-            st.error(logs[-1])
-            
-            st.markdown("### 📝 Log hasta el error:")
-            for i, log in enumerate(logs, 1):
-                st.text(f"{i:2d}. {log}")
-            
-            st.code(f"""
-ERROR COMPLETO:
-{str(e)}
-
-Tipo: {type(e).__name__}
-""")
-
-
-def verificar_configuracion_database():
-    """
-    Verificar la configuración de la base de datos
-    """
-    
-    st.markdown("### ⚙️ Verificación de Configuración")
-    
-    # Mostrar configuración actual
-    st.code(f"""
-CONFIGURACIÓN ACTUAL:
-Host: {DATABASE_CONFIG['host']}
-Puerto: {DATABASE_CONFIG['port']}
-Base de datos: {DATABASE_CONFIG['database']}
-Usuario: {DATABASE_CONFIG['user']}
-Password: {'*' * len(DATABASE_CONFIG['password'])}
-""")
-    
-    # Test de configuración alternativa
-    if st.button("🔧 Test con Usuario Postgres"):
-        try:
-            # Crear conexión directa con psycopg2
-            import psycopg2
-            
-            conn = psycopg2.connect(
-                host=DATABASE_CONFIG['host'],
-                port=DATABASE_CONFIG['port'],
-                database=DATABASE_CONFIG['database'],
-                user=DATABASE_CONFIG['user'],
-                password=DATABASE_CONFIG['password']
-            )
-            
-            cursor = conn.cursor()
-            
-            # Test básico
-            cursor.execute("SELECT 1")
-            result = cursor.fetchone()[0]
-            
-            if result == 1:
-                st.success("✅ Conexión directa con psycopg2 OK")
-                
-                # Test de permisos
-                cursor.execute("""
-                    SELECT has_table_privilege(%s, 'archivos_cargados', 'DELETE'),
-                           has_table_privilege(%s, 'resultados_normalizacion', 'DELETE')
-                """, (DATABASE_CONFIG['user'], DATABASE_CONFIG['user']))
-                
-                permisos = cursor.fetchone()
-                
-                if permisos[0] and permisos[1]:
-                    st.success("✅ Permisos DELETE OK")
-                else:
-                    st.error(f"❌ Permisos DELETE: archivos={permisos[0]}, resultados={permisos[1]}")
-                    
-            conn.close()
-            
-        except Exception as e:
-            st.error(f"❌ Error con conexión directa: {str(e)}")
-
-
-# ========================================
-# FUNCIÓN PRINCIPAL DE DIAGNÓSTICO
-# ========================================
-
-def ejecutar_diagnostico_completo(id_archivo):
-    """
-    Ejecutar todos los diagnósticos en secuencia
-    """
-    
-    st.markdown("# 🔬 DIAGNÓSTICO COMPLETO DEL PROBLEMA")
-    
-    # Diagnóstico 1: BD General
-    diagnostico_completo_bd()
-    
-    st.markdown("---")
-    
-    # Diagnóstico 2: Configuración
-    verificar_configuracion_database()
-    
-    st.markdown("---")
-    
-    # Diagnóstico 3: Test específico del archivo
-    test_eliminacion_con_logs(id_archivo)
-
-
-# ========================================
-# FUNCIONES DE TEST Y SOLUCIÓN PARA ELIMINAR
-# AGREGAR AL FINAL DEL ARCHIVO (antes del if __name__ == "__main__":)
-# ========================================
-
-def test_psycopg2_simple():
-    """
-    Test directo con psycopg2 para verificar que DELETE funciona
-    AGREGAR AL FINAL DE TU ARCHIVO
-    """
-    
-    st.markdown("### 🧪 Test psycopg2 Directo")
-    
-    if st.button("🚀 Probar DELETE con psycopg2"):
-        try:
-            import psycopg2
-            import uuid
-            import time
-            
-            # Conectar directamente con psycopg2
-            conn = psycopg2.connect(
-                host=DATABASE_CONFIG['host'],
-                port=DATABASE_CONFIG['port'],
-                database=DATABASE_CONFIG['database'],
-                user=DATABASE_CONFIG['user'],
-                password=DATABASE_CONFIG['password']
-            )
-            
-            cursor = conn.cursor()
-            
-            # PASO 1: Crear registro de prueba
-            test_id = str(uuid.uuid4())  # Generar UUID válido            
-            st.info("1️⃣ Creando registro de prueba...")
-            
-            cursor.execute("""
-                INSERT INTO archivos_cargados 
-                (id_archivo, nombre_archivo, tipo_catalogo, division, total_registros)
-                VALUES (%s, 'TEST_DELETE.csv', 'ESTADOS', 'TEST', 5)
-            """, (test_id,))
-            
-            conn.commit()
-            st.success("✅ Registro creado")
-            
-            # PASO 2: Verificar que existe
-            cursor.execute("SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = %s", (test_id,))
-            count_antes = cursor.fetchone()[0]
-            st.info(f"2️⃣ Registros antes: {count_antes}")
-            
-            # PASO 3: ELIMINAR
-            st.info("3️⃣ Ejecutando DELETE...")
-            
-            cursor.execute("DELETE FROM archivos_cargados WHERE id_archivo = %s", (test_id,))
-            eliminados = cursor.rowcount
-            
-            st.info(f"   📊 Registros eliminados reportados: {eliminados}")
-            
-            # PASO 4: COMMIT EXPLÍCITO
-            st.info("4️⃣ Haciendo COMMIT...")
-            conn.commit()
-            
-            # PASO 5: Verificar eliminación
-            cursor.execute("SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = %s", (test_id,))
-            count_despues = cursor.fetchone()[0]
-            st.info(f"5️⃣ Registros después: {count_despues}")
-            
-            # RESULTADO
-            if count_despues == 0:
-                st.success("🎉 **psycopg2 DELETE FUNCIONA PERFECTAMENTE**")
-                st.success("✅ El problema es SQLAlchemy, no PostgreSQL")
-            else:
-                st.error("❌ DELETE no funcionó ni con psycopg2")
-                st.error("🔍 El problema es más profundo (permisos, etc.)")
-            
-            conn.close()
-            
-        except Exception as e:
-            st.error(f"❌ Error en test psycopg2: {str(e)}")
-            st.code(str(e))
-
-
-def eliminar_archivo_ultra_simple(id_archivo):
-    """
-    Eliminación ultra simple usando psycopg2 directo
-    REEMPLAZAR LA FUNCIÓN PROBLEMÁTICA POR ESTA
-    """
-    
-    st.markdown("### 🗑️ Eliminación Ultra Simple")
-    
-    # Confirmación
-    if st.checkbox("⚠️ Confirmar eliminación definitiva", key=f"confirm_ultra_{id_archivo}"):
-        
-        if st.button("🗑️ ELIMINAR CON PSYCOPG2", key=f"ultra_delete_{id_archivo}", type="primary"):
-            
-            try:
-                import psycopg2
-                
-                # Progreso
-                progress = st.progress(0)
-                status = st.empty()
-                
-                # Conectar con psycopg2 directo
-                status.text("🔌 Conectando con psycopg2...")
-                progress.progress(0.1)
-                
-                conn = psycopg2.connect(
-                    host=DATABASE_CONFIG['host'],
-                    port=DATABASE_CONFIG['port'],
-                    database=DATABASE_CONFIG['database'],
-                    user=DATABASE_CONFIG['user'],
-                    password=DATABASE_CONFIG['password']
-                )
-                
-                cursor = conn.cursor()
-                
-                # Obtener info del archivo
-                status.text("📋 Obteniendo información del archivo...")
-                progress.progress(0.2)
-                
-                cursor.execute("""
-                    SELECT nombre_archivo, tipo_catalogo, division 
-                    FROM archivos_cargados WHERE id_archivo = %s
-                """, (id_archivo,))
-                
-                archivo_info = cursor.fetchone()
-                
-                if not archivo_info:
-                    st.error("❌ Archivo no encontrado")
-                    conn.close()
-                    return
-                
-                nombre, tipo, division = archivo_info
-                
-                # Contar registros a eliminar
-                status.text("🔢 Contando registros...")
-                progress.progress(0.3)
-                
-                cursor.execute("SELECT COUNT(*) FROM resultados_normalizacion WHERE id_archivo = %s", (id_archivo,))
-                total_resultados = cursor.fetchone()[0]
-                
-                # ELIMINAR RESULTADOS
-                status.text(f"🗑️ Eliminando {total_resultados} resultados...")
-                progress.progress(0.5)
-                
-                cursor.execute("DELETE FROM resultados_normalizacion WHERE id_archivo = %s", (id_archivo,))
-                resultados_eliminados = cursor.rowcount
-                
-                # ELIMINAR ARCHIVO
-                status.text("🗑️ Eliminando registro del archivo...")
-                progress.progress(0.7)
-                
-                cursor.execute("DELETE FROM archivos_cargados WHERE id_archivo = %s", (id_archivo,))
-                archivos_eliminados = cursor.rowcount
-                
-                # COMMIT EXPLÍCITO
-                status.text("💾 Guardando cambios...")
-                progress.progress(0.9)
-                
-                conn.commit()
-                
-                # VERIFICAR
-                cursor.execute("SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = %s", (id_archivo,))
-                verificacion = cursor.fetchone()[0]
-                
-                progress.progress(1.0)
-                
-                if verificacion == 0:
-                    status.text("✅ Eliminación completada!")
-                    
-                    st.success(f"""
-                    ### ✅ ELIMINACIÓN EXITOSA
-                    
-                    **Archivo eliminado:** {nombre}
-                    **Tipo:** {tipo} | **División:** {division}
-                    **Resultados eliminados:** {resultados_eliminados:,}
-                    **Registros de archivo:** {archivos_eliminados}
-                    
-                    🔄 **Recargando página...**
-                    """)
-                    
-                    # Auto-reload
-                    time.sleep(2)
-                    st.rerun()
-                    
-                else:
-                    st.error("❌ La eliminación no se completó correctamente")
-                
-                conn.close()
-                
-            except Exception as e:
-                st.error(f"❌ Error en eliminación ultra simple: {str(e)}")
-                st.code(f"""
-ERROR COMPLETO:
-{str(e)}
-
-ID Archivo: {id_archivo}
-Función: eliminar_archivo_ultra_simple()
-                """)
-
-
-# ========================================
-# MODIFICACIÓN PARA EL DASHBOARD
-# ========================================
-
-def mostrar_procesamiento_tiempo_real_FIXED():
-    """
-    Versión corregida del procesamiento en tiempo real
-    REEMPLAZAR LA FUNCIÓN EXISTENTE POR ESTA
-    """
-    
-    st.markdown("### ⚙️ Monitor de Procesamiento")
-    
-    # AGREGAR EL TEST TEMPORALMENTE AQUÍ
-    st.markdown("---")
-    test_psycopg2_simple()  # ← ESTA ES LA LÍNEA QUE NECESITAS
-    st.markdown("---")
-    
-    # Obtener archivos en procesamiento
-    sistema = SistemaNormalizacion()
-    
-    try:
-        with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division,
-                       a.total_registros, a.fecha_carga, a.estado_procesamiento,
-                       COALESCE(r.procesados, 0) as registros_procesados
-                FROM archivos_cargados a
-                LEFT JOIN (
-                    SELECT id_archivo, COUNT(*) as procesados
-                    FROM resultados_normalizacion
-                    GROUP BY id_archivo
-                ) r ON a.id_archivo = r.id_archivo
-                WHERE a.fecha_carga >= CURRENT_DATE - INTERVAL '1 day'
-                ORDER BY a.fecha_carga DESC
-            """))
-            
-            archivos = []
-            for row in result:
-                if row is not None:
-                    archivos.append(dict(row._mapping))
-        
-        if archivos:
-            st.markdown("#### 📊 Archivos Recientes:")
-            
-            for archivo in archivos:
-                with st.expander(f"📄 {archivo['nombre_archivo']} - {archivo['estado_procesamiento']}"):
-                    # ... código existente de métricas ...
-                    
-                    # BOTONES CORREGIDOS
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        if st.button(f"📊 Ver Resultados", key=f"ver_{archivo['id_archivo']}"):
-                            mostrar_resultados_archivo(archivo['id_archivo'])
-                    
-                    with col2:
-                        if st.button(f"📥 Descargar", key=f"desc_{archivo['id_archivo']}"):
-                            descargar_resultados_archivo(archivo['id_archivo'])
-                    
-                    with col3:
-                        if archivo['estado_procesamiento'] == 'COMPLETADO':
-                            # USAR LA NUEVA FUNCIÓN ULTRA SIMPLE
-                            eliminar_archivo_ultra_simple(archivo['id_archivo'])
-        
-        else:
-            st.info("📋 No hay archivos procesados recientemente")
-            
-    except Exception as e:
-        st.error(f"Error consultando procesamiento: {str(e)}")
-
-
-
-# ========================================
-# FUNCIÓN AUXILIAR: INTERFAZ LIMITADA PARA USUARIOS
-# ========================================
-
-def mostrar_interfaz_carga_limitada():
-    """Interfaz de carga limitada para usuarios normales"""
-    
-    usuario_actual = st.session_state.get('usuario_actual', {})
-    rol_usuario = usuario_actual.get('rol', 'USUARIO')
-    
-    if rol_usuario == 'USUARIO':
-        # Solo mostrar información, sin permitir cargas
-        st.markdown("## 📁 Visualización de Carga de Archivos")
-        
-        st.info("""
-        👤 **Acceso de Usuario:**
-        - Puedes **visualizar** el estado de archivos cargados
-        - **No puedes cargar** nuevos archivos
-        - **No puedes gestionar** referencias
-        
-        📞 **Para cargar archivos:** Contacta a un administrador
-        """)
-        
-        # Solo mostrar la pestaña de procesamiento (solo lectura)
-        mostrar_procesamiento_tiempo_real()
-    
-    else:
-        # Para administradores, mostrar interfaz completa
-        mostrar_interfaz_carga()
-
-
-# ========================================
-# ALTERNATIVA: CONTROL MÁS GRANULAR
-# ========================================
-
-def main_aplicacion_original_granular():
-    """Versión con control más granular de funciones"""
-    
-    # ... código de estilos igual ...
-    
-    # Header principal (igual)
-    col_logo, col_title = st.columns([1, 8])
-    with col_logo:
-        try:
-            st.image("logo_RN.png", width=120)
-        except:
-            st.markdown("🏠")
-    with col_title:
-        st.markdown("""
-        <div  style="text-align: left;">
-            <h3>Red Nacional Última Milla</h3>
-            <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Obtener información del usuario
-    usuario_actual = st.session_state.get('usuario_actual', {})
-    rol_usuario = usuario_actual.get('rol', 'USUARIO')
-    nombre_usuario = usuario_actual.get('nombre_completo', 'Usuario')
-    
-    # Mostrar pestañas según permisos
-    if rol_usuario == 'SUPERUSUARIO':
-        # SUPERUSUARIO: Acceso total
-        tabs = st.tabs([
-            "📊 Dashboard", 
-            "📁 Carga de Archivos", 
-            "📋 Resultados", 
-            "⚙️ Configuración",
-            "👥 Usuarios"  # Pestaña extra para superusuarios
-        ])
-        
-        with tabs[0]:
-            mostrar_dashboard_principal()
-        with tabs[1]:
-            mostrar_interfaz_carga()
-        with tabs[2]:
-            mostrar_seccion_resultados()
-        with tabs[3]:
-            mostrar_configuracion_sistema()
-        with tabs[4]:
-            mostrar_gestion_usuarios()
-    
-    elif rol_usuario == 'GERENTE':
-        # GERENTE: Acceso casi total
-        tabs = st.tabs([
-            "📊 Dashboard", 
-            "📁 Carga de Archivos", 
-            "📋 Resultados", 
-            "⚙️ Configuración"
-        ])
-        
-        with tabs[0]:
-            mostrar_dashboard_principal()
-        with tabs[1]:
-            mostrar_interfaz_carga()
-        with tabs[2]:
-            mostrar_seccion_resultados()
-        with tabs[3]:
-            mostrar_configuracion_sistema_limitada()  # Configuración limitada
-    
-    else:
-        # USUARIO: Solo lectura
-        tabs = st.tabs([
-            "📊 Dashboard", 
-            "📋 Consultas"
-        ])
-        
-        with tabs[0]:
-            mostrar_dashboard_principal()
-        with tabs[1]:
-            mostrar_seccion_resultados()
-        
-        # Mensaje informativo para usuarios
-        st.sidebar.info(f"""
-        👤 **{nombre_usuario}**
-        🔒 **Rol:** {rol_usuario}
-        
-        **Permisos actuales:**
-        - ✅ Ver dashboard
-        - ✅ Consultar resultados
-        - ❌ Cargar archivos
-        - ❌ Configuración
-        
-        📞 **Necesitas más permisos?**
-        Contacta al administrador
-        """)
-
-
-# ========================================
-# FUNCIÓN AUXILIAR: CONFIGURACIÓN LIMITADA
-# ========================================
-
-def mostrar_configuracion_sistema_limitada():
-    """Configuración limitada para gerentes"""
-    
-    st.markdown("## ⚙️ Configuración del Sistema")
-    
-    st.info("""
-    👨‍💼 **Acceso de Gerente:**
-    Solo puedes ver estadísticas y referencias.
-    Las configuraciones avanzadas requieren permisos de SUPERUSUARIO.
-    """)
-    
-    # Solo mostrar pestañas de lectura
-    tab1, tab2 = st.tabs([
-        "📚 Referencias", 
-        "📊 Estadísticas"
-    ])
-    
-    with tab1:
-        mostrar_gestion_referencias()
-    
-    with tab2:
-        mostrar_estadisticas_sistema()
-
-
-def mostrar_parametros_sistema_admin():
-    """Parámetros del sistema - SOLO para SUPERUSUARIOS"""
-    
-    st.markdown("#### ⚙️ Parámetros del Sistema")
-    st.markdown("🔒 **Acceso de Administrador** - Configuración técnica avanzada")
-    
-    # Advertencia de seguridad
-    st.warning("""
-    ⚠️ **ATENCIÓN:** Estos parámetros afectan el rendimiento del sistema.
-    Cambios incorrectos pueden causar problemas de estabilidad.
-    """)
-    
-    with st.expander("ℹ️ ¿Qué significan estos parámetros?", expanded=False):
-        st.markdown("""
-        **🔢 Tamaño de lote:**
-        - Cantidad de registros procesados simultáneamente
-        - **Menor valor** = Menos memoria, más lento
-        - **Mayor valor** = Más memoria, más rápido
-        
-        **⏱️ Timeout de consultas:**
-        - Tiempo máximo para consultas SQL (segundos)
-        - Evita consultas que se "cuelguen"
-        
-        **🧵 Número de hilos:**
-        - Procesos paralelos para normalización
-        - **Más hilos** = Más velocidad, más CPU
-        - **Menos hilos** = Menos recursos, más estable
-        
-        **💾 TTL de cache:**
-        - Tiempo que se guardan resultados en memoria
-        - **Mayor TTL** = Menos consultas, datos menos frescos
-        - **Menor TTL** = Más consultas, datos más actualizados
-        """)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("**⚡ Rendimiento:**")
-        batch_size = st.number_input(
-            "🔢 Tamaño de lote para procesamiento:", 
-            value=1000, 
-            min_value=100, 
-            max_value=10000,
-            step=100,
-            help="Registros procesados por lote. Más alto = más memoria pero más rápido."
-        )
-        
-        timeout_seconds = st.number_input(
-            "⏱️ Timeout de consultas (segundos):", 
-            value=30, 
-            min_value=5, 
-            max_value=300,
-            step=5,
-            help="Tiempo máximo para una consulta SQL antes de cancelarla."
-        )
-    
-    with col2:
-        st.markdown("**🔧 Concurrencia:**")
-        max_workers = st.number_input(
-            "🧵 Número máximo de hilos:", 
-            value=4, 
-            min_value=1, 
-            max_value=16,
-            step=1,
-            help="Procesos paralelos. Más hilos = más velocidad pero más CPU."
-        )
-        
-        cache_ttl = st.number_input(
-            "💾 TTL de cache (segundos):", 
-            value=300, 
-            min_value=60, 
-            max_value=3600,
-            step=30,
-            help="Tiempo que los resultados se mantienen en memoria."
-        )
-    
-    # Recomendaciones automáticas
-    st.markdown("#### 💡 Recomendaciones Automáticas:")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("📱 Configurar para archivos pequeños", help="< 1,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 500,
-                'timeout': 15,
-                'workers': 2,
-                'cache': 300
-            }
-            st.success("✅ Configuración aplicada para archivos pequeños")
-    
-    with col2:
-        if st.button("📊 Configurar para archivos medianos", help="1,000 - 10,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 1000,
-                'timeout': 30,
-                'workers': 4,
-                'cache': 300
-            }
-            st.success("✅ Configuración aplicada para archivos medianos")
-    
-    with col3:
-        if st.button("📈 Configurar para archivos grandes", help="> 10,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 2000,
-                'timeout': 60,
-                'workers': 6,
-                'cache': 600
-            }
-            st.success("✅ Configuración aplicada para archivos grandes")
-    
-    # Botón para guardar configuración
-    if st.button("💾 Guardar Configuración", type="primary"):
-        # Guardar en base de datos o archivo de configuración
-        guardar_configuracion_sistema(batch_size, timeout_seconds, max_workers, cache_ttl)
-        st.success("✅ Configuración guardada correctamente")
-        
-        # Mostrar resumen de lo guardado
-        st.info(f"""
-        **Configuración guardada:**
-        - 🔢 Lote: {batch_size:,} registros
-        - ⏱️ Timeout: {timeout_seconds} segundos
-        - 🧵 Hilos: {max_workers}
-        - 💾 Cache: {cache_ttl} segundos
-        """)
-
-
-def mostrar_mensaje_permisos_parametros(rol_usuario):
-    """Mensaje para usuarios sin permisos para ver parámetros"""
-    
-    st.markdown("#### ⚙️ Parámetros del Sistema")
-    
-    # Mensaje diferente según el rol
-    if rol_usuario == 'GERENTE':
-        st.warning("""
-        👨‍💼 **Acceso de Gerente:**
-        
-        Los parámetros técnicos del sistema solo pueden ser modificados por el **SUPERUSUARIO**.
-        
-        **¿Por qué?**
-        - Cambios incorrectos pueden afectar la estabilidad
-        - Requieren conocimiento técnico avanzado
-        - Pueden impactar el rendimiento de todos los usuarios
-        
-        📞 **¿Necesitas cambiar algo?** Contacta al administrador del sistema.
-        """)
-    else:
-        st.info("""
-        👤 **Acceso de Usuario:**
-        
-        Esta sección contiene configuraciones técnicas avanzadas del sistema.
-        
-        **Solo el administrador (SUPERUSUARIO) puede:**
-        - Ver parámetros de rendimiento
-        - Modificar configuraciones de la base de datos
-        - Ajustar configuraciones de procesamiento
-        
-        📞 **¿Problemas de rendimiento?** Reporta al administrador.
-        """)
-    
-    # Mostrar información básica que sí pueden ver
-    st.markdown("---")
-    st.markdown("#### ℹ️ Información Disponible:")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.success("""
-        **✅ Puedes ver:**
-        - Estado de la conexión
-        - Estadísticas de tablas
-        - Información de la base de datos
-        """)
-    
-    with col2:
-        st.error("""
-        **❌ No puedes modificar:**
-        - Parámetros de rendimiento
-        - Configuración de hilos
-        - Timeouts del sistema
-        """)
-
-
-def guardar_configuracion_sistema(batch_size, timeout, workers, cache_ttl):
-    """Guardar configuración del sistema en base de datos"""
-    
-    try:
-        sistema = SistemaNormalizacion()
-        usuario_actual = st.session_state.get('usuario_actual', {})
-        
-        # Crear tabla de configuración si no existe
-        with sistema.engine.connect() as conn:
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS configuracion_sistema (
-                    id SERIAL PRIMARY KEY,
-                    parametro VARCHAR(50) UNIQUE NOT NULL,
-                    valor VARCHAR(100) NOT NULL,
-                    descripcion TEXT,
-                    modificado_por UUID REFERENCES usuarios(id_usuario),
-                    fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """))
-            
-            # Insertar o actualizar parámetros
-            parametros = [
-                ('batch_size', str(batch_size), 'Tamaño de lote para procesamiento'),
-                ('timeout_seconds', str(timeout), 'Timeout de consultas en segundos'),
-                ('max_workers', str(workers), 'Número máximo de hilos'),
-                ('cache_ttl', str(cache_ttl), 'TTL de cache en segundos')
-            ]
-            
-            for param, valor, desc in parametros:
-                conn.execute(text("""
-                    INSERT INTO configuracion_sistema (parametro, valor, descripcion, modificado_por)
-                    VALUES (:param, :valor, :desc, :user_id)
-                    ON CONFLICT (parametro) 
-                    DO UPDATE SET 
-                        valor = EXCLUDED.valor,
-                        modificado_por = EXCLUDED.modificado_por,
-                        fecha_modificacion = CURRENT_TIMESTAMP
-                """), {
-                    'param': param,
-                    'valor': valor,
-                    'desc': desc,
-                    'user_id': usuario_actual.get('id_usuario')
-                })
-            
-            conn.commit()
-        
-        return True
-    
-    except Exception as e:
-        st.error(f"Error guardando configuración: {e}")
-        return False
-
-
-# ========================================
-# FUNCIÓN AUXILIAR: VERIFICAR SI ES SUPERUSUARIO
-# ========================================
-
-def es_solo_superusuario():
-    """Verificar si el usuario actual es SOLO superusuario (no gerente)"""
-    if 'usuario_actual' in st.session_state:
-        return st.session_state.usuario_actual.get('rol') == 'SUPERUSUARIO'
-    return False
 
 # ========================================
 # 10. EJECUCIÓN PRINCIPAL
 # ========================================
 
 if __name__ == "__main__":
-    #main()
-    main_con_autenticacion()
-    #probar_diccionarios_inteligentes()
-    #verificar_paso1()
-    #mostrar_instrucciones_paso2()
-    #print("\n" + "="*50)
-  #  verificar_paso2_implementacion()
+
+    main()
+    
