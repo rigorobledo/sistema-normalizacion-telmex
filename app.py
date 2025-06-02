@@ -27,6 +27,7 @@ import unicodedata
 
 import os
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 # Cargar variables de entorno
 load_dotenv()
@@ -4070,7 +4071,7 @@ Tipo: {type(e).__name__}
 def eliminar_archivo_ultra_simple(id_archivo):
     """
     Eliminación ultra simple usando psycopg2 directo
-    REEMPLAZAR LA FUNCIÓN PROBLEMÁTICA POR ESTA
+    CORREGIDA PARA RAILWAY
     """
     
     st.markdown("### 🗑️ Eliminación Ultra Simple")
@@ -4082,22 +4083,38 @@ def eliminar_archivo_ultra_simple(id_archivo):
             
             try:
                 import psycopg2
+                from urllib.parse import urlparse
                 
                 # Progreso
                 progress = st.progress(0)
                 status = st.empty()
                 
-                # Conectar con psycopg2 directo
+                # CORRECCIÓN: Conectar según el ambiente
                 status.text("🔌 Conectando con psycopg2...")
                 progress.progress(0.1)
                 
-                conn = psycopg2.connect(
-                    host=DATABASE_CONFIG['host'],
-                    port=DATABASE_CONFIG['port'],
-                    database=DATABASE_CONFIG['database'],
-                    user=DATABASE_CONFIG['user'],
-                    password=DATABASE_CONFIG['password']
-                )
+                if IS_RAILWAY and 'url' in DATABASE_CONFIG:
+                    # En Railway: parsear DATABASE_URL
+                    database_url = DATABASE_CONFIG['url']
+                    parsed = urlparse(database_url)
+                    
+                    conn = psycopg2.connect(
+                        host=parsed.hostname,
+                        port=parsed.port or 5432,
+                        database=parsed.path[1:],  # Quitar el '/' inicial
+                        user=parsed.username,
+                        password=parsed.password,
+                        sslmode='require'  # Railway requiere SSL
+                    )
+                else:
+                    # Local: usar configuración tradicional
+                    conn = psycopg2.connect(
+                        host=DATABASE_CONFIG['host'],
+                        port=DATABASE_CONFIG['port'],
+                        database=DATABASE_CONFIG['database'],
+                        user=DATABASE_CONFIG['user'],
+                        password=DATABASE_CONFIG['password']
+                    )
                 
                 cursor = conn.cursor()
                 
@@ -4467,11 +4484,12 @@ def guardar_configuracion_sistema(batch_size, timeout, workers, cache_ttl):
 def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref, nombre_archivo):
     """
     Función de carga que fuerza la actualización de la interfaz
-    AGREGAR ESTA NUEVA FUNCIÓN
+    CORREGIDA PARA RAILWAY
     """
     
     try:
         import psycopg2
+        from urllib.parse import urlparse
         
         # Validar datos básicos
         if 'nombre_oficial' not in df_ref.columns or 'codigo_oficial' not in df_ref.columns:
@@ -4483,16 +4501,31 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
             st.error(f"❌ Hay {registros_vacios} registros sin nombre oficial")
             return False
         
-        # Conectar con psycopg2
+        # CORRECCIÓN: Conectar según el ambiente
         st.info("🔌 Conectando a PostgreSQL...")
         
-        conn = psycopg2.connect(
-            host=DATABASE_CONFIG['host'],
-            port=DATABASE_CONFIG['port'],
-            database=DATABASE_CONFIG['database'],
-            user=DATABASE_CONFIG['user'],
-            password=DATABASE_CONFIG['password']
-        )
+        if IS_RAILWAY and 'url' in DATABASE_CONFIG:
+            # En Railway: parsear DATABASE_URL
+            database_url = DATABASE_CONFIG['url']
+            parsed = urlparse(database_url)
+            
+            conn = psycopg2.connect(
+                host=parsed.hostname,
+                port=parsed.port or 5432,
+                database=parsed.path[1:],  # Quitar el '/' inicial
+                user=parsed.username,
+                password=parsed.password,
+                sslmode='require'  # Railway requiere SSL
+            )
+        else:
+            # Local: usar configuración tradicional
+            conn = psycopg2.connect(
+                host=DATABASE_CONFIG['host'],
+                port=DATABASE_CONFIG['port'],
+                database=DATABASE_CONFIG['database'],
+                user=DATABASE_CONFIG['user'],
+                password=DATABASE_CONFIG['password']
+            )
         
         cursor = conn.cursor()
         
