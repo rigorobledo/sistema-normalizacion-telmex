@@ -24,6 +24,7 @@ import re
 from fuzzywuzzy import fuzz, process
 import unicodedata
 
+
 import os
 from dotenv import load_dotenv
 
@@ -33,6 +34,7 @@ load_dotenv()
 # Detectar ambiente
 IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
 IS_LOCAL = not IS_RAILWAY
+
 
 # ========================================
 # SISTEMA COMPLETO DE LOGIN Y AUTENTICACIÓN
@@ -900,6 +902,7 @@ PATRONES_LIMPIEZA_MEXICO = [
 # ========================================
 
 
+
 # Configuración de página
 st.set_page_config(
     page_title="🏠 Sistema Integral - Normalización Telmex",
@@ -984,17 +987,9 @@ class SistemaNormalizacion:
         self.inicializar_patrones_limpieza()
         
     def crear_conexion(self):
-        """Crear conexión a PostgreSQL - Versión adaptativa"""
+        """Crear conexión a PostgreSQL"""
         try:
-            if IS_RAILWAY and 'url' in DATABASE_CONFIG:
-                # En Railway: usar URL directa
-                engine = create_engine(DATABASE_CONFIG['url'])
-            else:
-                # Local: usar configuración tradicional
-                config = DATABASE_CONFIG
-                connection_string = f"postgresql://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['database']}"
-                engine = create_engine(connection_string)
-            
+            engine = create_engine(f"postgresql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}/{DATABASE_CONFIG['database']}")
             return engine
         except Exception as e:
             st.error(f"Error de conexión: {e}")
@@ -1614,29 +1609,7 @@ class SistemaNormalizacion:
         
         return texto_especifico
 
-    def aplicar_patrones_limpieza_inteligente(self, texto):
-        """
-        Aplicar patrones de limpieza usando expresiones regulares compiladas
-        AGREGAR ESTE MÉTODO A LA CLASE SistemaNormalizacion
-        """
-        
-        if not hasattr(self, 'patrones_compilados'):
-            # Si no están compilados, compilar ahora
-            self.inicializar_patrones_limpieza()
-        
-        texto_procesado = texto
-        
-        for regex_compilado, reemplazo in self.patrones_compilados:
-            texto_anterior = texto_procesado
-            try:
-                texto_procesado = regex_compilado.sub(reemplazo, texto_procesado)
-                if texto_procesado != texto_anterior:
-                    print(f"   Patrón '{regex_compilado.pattern}': '{texto_anterior}' → '{texto_procesado}'")
-            except Exception as e:
-                print(f"   ⚠️ Error aplicando patrón: {e}")
-                continue
-        
-        return texto_procesado      
+       
 
 
     # ========================================
@@ -1665,254 +1638,13 @@ class SistemaNormalizacion:
         
 
 
-# ========================================
-# FUNCIÓN DE PRUEBA
-# ========================================
-
-def probar_diccionarios_inteligentes():
-    """
-    Función de prueba - AGREGAR AL FINAL DE TU ARCHIVO
-    """
-    
-    print("🧪 PROBANDO DICCIONARIOS INTELIGENTES")
-    print("=" * 50)
-    
-    # Simular la clase con los nuevos métodos
-    class PruebaSistema:
-        def __init__(self):
-            self.abreviaciones = ABREVIACIONES_MEXICO
-            self.correcciones = CORRECCIONES_TIPOGRAFICAS
-            self.sinonimos = SINONIMOS_MEXICO
-            self.indice_sinonimos = {}
-            for principal, variaciones in self.sinonimos.items():
-                for variacion in variaciones:
-                    self.indice_sinonimos[variacion] = principal
-    
-    sistema = PruebaSistema()
-    
-    # Casos de prueba
-    casos_prueba = [
-        "B.C.",
-        "CDMX", 
-        "DOCT0RES",
-        "STA MARIA",
-        "CENTRO HISTORICO",
-        "FRACC RESIDENCIAL",
-        "CD. JUAREZ",
-        "EDO MEX"
-    ]
-    
-    print("Casos de prueba:")
-    for caso in casos_prueba:
-        print(f"\nOriginal: '{caso}'")
-        
-        # Simular expandir_abreviaciones_inteligente
-        expandido = caso.upper()
-        for abrev, completo in sistema.abreviaciones.items():
-            if abrev in expandido:
-                expandido = expandido.replace(abrev, completo)
-                print(f"   Expandido: '{expandido}'")
-        
-        # Simular corregir_errores_tipograficos
-        corregido = expandido
-        for incorrecto, correcto in sistema.correcciones.items():
-            if incorrecto in corregido:
-                corregido = corregido.replace(incorrecto, correcto)
-                print(f"   Corregido: '{corregido}'")
-
-
-# ========================================
-# VERIFICACIÓN PASO 1
-# ========================================
-
-def verificar_paso1():
-    """
-    Función para verificar que el Paso 1 está implementado correctamente
-    EJECUTAR DESPUÉS DE IMPLEMENTAR
-    """
-    
-    print("🔍 VERIFICANDO PASO 1...")
-    
-    # Verificar que los diccionarios existen
-    try:
-        assert len(ABREVIACIONES_MEXICO) > 30, "Faltan abreviaciones"
-        assert len(CORRECCIONES_TIPOGRAFICAS) > 3, "Faltan correcciones"
-        assert len(SINONIMOS_MEXICO) > 5, "Faltan sinónimos"
-        print("✅ Diccionarios definidos correctamente")
-    except Exception as e:
-        print(f"❌ Error en diccionarios: {e}")
-        return False
-    
-    # Verificar casos específicos
-    casos_verificacion = [
-        ('B.C.' in ABREVIACIONES_MEXICO, "Abreviación B.C."),
-        ('CDMX' in ABREVIACIONES_MEXICO, "Abreviación CDMX"),
-        ('0' in CORRECCIONES_TIPOGRAFICAS, "Corrección 0→O"),
-        ('CENTRO' in SINONIMOS_MEXICO, "Sinónimos de CENTRO")
-    ]
-    
-    for verif, descripcion in casos_verificacion:
-        if verif:
-            print(f"✅ {descripcion}")
-        else:
-            print(f"❌ {descripcion}")
-            return False
-    
-    print("\n🎉 PASO 1 VERIFICADO CORRECTAMENTE")
-    print("Proceder al Paso 2: Mejorar limpieza de texto")
-    return True
-# ========================================
-# FUNCIÓN DE PRUEBA ESPECÍFICA PASO 2
-# ========================================
-
-def probar_limpieza_inteligente():
-    """
-    Probar la nueva limpieza inteligente
-    AGREGAR AL FINAL DEL ARCHIVO (o ejecutar por separado)
-    """
-    
-    print("🧪 PROBANDO LIMPIEZA INTELIGENTE - PASO 2")
-    print("=" * 50)
-    
-    # Casos de prueba específicos para cada tipo
-    casos_prueba = {
-        'ESTADOS': [
-            "b.c.",
-            "CDMX",
-            "Estado de México", 
-            "N.L.",
-            "distrito federal"
-        ],
-        'CIUDADES': [
-            "cd. juárez",
-            "guadalajara",
-            "CIUDAD DE MÉXICO",
-            "gdle"
-        ],
-        'MUNICIPIOS': [
-            "mpio. guadalajara",
-            "MUNICIPIO TIJUANA",
-            "benito juárez"
-        ],
-        'COLONIAS': [
-            "col. centro",
-            "DOCT0RES",
-            "STA. MARÍA LA RIBERA",
-            "fracc. residencial",
-            "centro histórico"
-        ]
-    }
-    
-    try:
-        sistema = SistemaNormalizacion()
-        
-        for tipo, casos in casos_prueba.items():
-            print(f"\n📋 TIPO: {tipo}")
-            print("-" * 30)
-            
-            for caso in casos:
-                print(f"\nOriginal: '{caso}'")
-                
-                if hasattr(sistema, 'limpiar_texto_inteligente'):
-                    resultado = sistema.limpiar_texto_inteligente(caso, tipo)
-                    print(f"Resultado: '{resultado}'")
-                else:
-                    print("❌ Método limpiar_texto_inteligente no encontrado")
-        
-        print(f"\n🎉 PRUEBA COMPLETADA")
-        
-    except Exception as e:
-        print(f"❌ Error en prueba: {e}")
 
 
 
 
-# ========================================
-# FUNCIÓN DE COMPARACIÓN ANTES/DESPUÉS
-# ========================================
-
-def comparar_limpieza_antes_despues():
-    """
-    Comparar limpieza original vs inteligente
-    """
-    
-    print("🔍 COMPARACIÓN ANTES/DESPUÉS")
-    print("=" * 40)
-    
-    casos_comparacion = [
-        "B.C.",
-        "DOCT0RES", 
-        "STA. MARÍA",
-        "CENTRO HISTÓRICO",
-        "CD. JUÁREZ"
-    ]
-    
-    sistema = SistemaNormalizacion()
-    
-    for caso in casos_comparacion:
-        print(f"\nTexto: '{caso}'")
-        
-        # Método original (si existe)
-        if hasattr(sistema, 'limpiar_texto_original'):
-            original = sistema.limpiar_texto_original(caso)
-            print(f"  Original: '{original}'")
-        
-        # Método inteligente
-        if hasattr(sistema, 'limpiar_texto_inteligente'):
-            inteligente = sistema.limpiar_texto_inteligente(caso, 'COLONIAS')
-            print(f"  Inteligente: '{inteligente}'")
-        
-        print("  " + "="*30)
 
 
-# ========================================
-# VERIFICACIÓN PASO 2
-# ========================================
 
-def verificar_paso2():
-    """
-    Verificar que el Paso 2 está implementado correctamente
-    """
-    
-    print("🔍 VERIFICANDO PASO 2...")
-    
-    try:
-        sistema = SistemaNormalizacion()
-        
-        # Verificar que los nuevos métodos existen
-        metodos_requeridos = [
-            'limpiar_texto_inteligente',
-            'limpieza_especifica_por_tipo',
-            'inicializar_patrones_limpieza'
-        ]
-        
-        for metodo in metodos_requeridos:
-            if hasattr(sistema, metodo):
-                print(f"✅ Método {metodo} disponible")
-            else:
-                print(f"❌ Método {metodo} falta")
-                return False
-        
-        # Verificar que los patrones se cargaron
-        if hasattr(sistema, 'patrones_limpieza'):
-            print(f"✅ {len(sistema.patrones_limpieza)} patrones de limpieza cargados")
-        else:
-            print(f"❌ Patrones de limpieza no cargados")
-            return False
-        
-        # Probar caso simple
-        resultado = sistema.limpiar_texto_inteligente("B.C.", "ESTADOS")
-        if resultado == "BAJA CALIFORNIA":
-            print("✅ Limpieza inteligente funcionando correctamente")
-        else:
-            print(f"⚠️ Resultado inesperado: '{resultado}' (esperado: 'BAJA CALIFORNIA')")
-        
-        print("\n🎉 PASO 2 VERIFICADO CORRECTAMENTE")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error en verificación: {e}")
-        return False
 
 # ========================================
 # FUNCIÓN AUXILIAR MEJORADA (FUERA DE LA CLASE)
@@ -1980,59 +1712,7 @@ A,00003,OBRERA"""
             st.markdown("**Ejemplo de datos correctos:**")
             st.code(ejemplos[tipo_catalogo], language="csv")
 
-    # ========================================
-    # VALIDACIÓN MEJORADA DE ARCHIVOS
-    # ========================================
-
-    def validar_estructura_archivo_mejorada(self, df, tipo_catalogo):
-        """Validar que el archivo tenga la estructura correcta de AS400 - MEJORADA"""
-        
-        if tipo_catalogo not in ESQUEMAS_AS400:
-            return False, f"Tipo de catálogo no válido: {tipo_catalogo}"
-        
-        esquema = ESQUEMAS_AS400[tipo_catalogo]
-        columnas_esperadas = list(esquema.keys())
-        columnas_archivo = df.columns.tolist()
-        
-        # Verificar que existan las columnas mínimas
-        columnas_faltantes = set(columnas_esperadas) - set(columnas_archivo)
-        if columnas_faltantes:
-            return False, f"❌ Faltan columnas obligatorias: {', '.join(columnas_faltantes)}"
-        
-        # Verificar que el archivo no esté vacío
-        if len(df) == 0:
-            return False, "❌ El archivo está vacío"
-        
-        # Verificar longitudes
-        errores_longitud = []
-        for columna, config in esquema.items():
-            if columna in df.columns:
-                # Convertir a string y calcular longitud máxima
-                df[columna] = df[columna].astype(str)
-                max_length = df[columna].str.len().max()
-                if max_length > config['longitud']:
-                    errores_longitud.append(f"❌ {columna}: longitud máxima {max_length} > esperado {config['longitud']}")
-        
-        if errores_longitud:
-            return False, f"Errores de longitud:\n" + "\n".join(errores_longitud)
-        
-        # Verificar que el campo de descripción tenga datos
-        CAMPO_DESCRIPCION_MAP = {
-            'ESTADOS': 'STADES',
-            'CIUDADES': 'CTYDES', 
-            'MUNICIPIOS': 'MPIDES',
-            'ALCALDIAS': 'DLGDES',
-            'COLONIAS': 'SDADES'
-        }
-        
-        campo_desc = CAMPO_DESCRIPCION_MAP.get(tipo_catalogo)
-        if campo_desc and campo_desc in df.columns:
-            registros_vacios = df[campo_desc].isna().sum() + (df[campo_desc] == '').sum()
-            if registros_vacios > 0:
-                return False, f"⚠️ {registros_vacios} registros tienen campo de descripción vacío en {campo_desc}"
-        
-        return True, f"✅ Estructura válida: {len(df)} registros, {len(columnas_archivo)} columnas"
-   
+    
     def normalizar_registro(self, texto_original, tipo_catalogo, division, campo_status, campo_clave, campo_descripcion):
         """Normalizar un registro individual usando los algoritmos de IA"""
         
@@ -2121,55 +1801,7 @@ A,00003,OBRERA"""
         print(f"   Resultado final: '{texto_final}'")
         return texto_final
     
-    def buscar_en_referencias(self, texto_limpio, tipo_catalogo):
-        """Buscar coincidencias en las referencias usando IA"""
-        
-        try:
-            with self.engine.connect() as conn:
-                # Obtener referencias del tipo correspondiente
-                result = conn.execute(text("""
-                    SELECT * FROM referencias_normalizacion 
-                    WHERE tipo_catalogo = :tipo AND activo = true
-                """), {'tipo': tipo_catalogo})
-                
-                referencias = [dict(row) for row in result]
-            
-            if not referencias:
-                return None
-            
-            mejor_match = None
-            mejor_confianza = 0.0
-            mejor_metodo = 'SIN_MATCH'
-            
-            # Buscar coincidencia exacta
-            for ref in referencias:
-                nombre_ref_limpio = self.limpiar_texto_inteligente(ref['nombre_oficial'])
-                if texto_limpio == nombre_ref_limpio:
-                    return {
-                        **ref,
-                        'metodo': 'EXACTO',
-                        'confianza': 1.0
-                    }
-            
-            # Buscar con fuzzy matching
-            nombres_referencias = [self.limpiar_texto(ref['nombre_oficial']) for ref in referencias]
-            mejor_fuzzy = process.extractOne(texto_limpio, nombres_referencias, scorer=fuzz.token_sort_ratio)
-            
-            if mejor_fuzzy and mejor_fuzzy[1] >= 60:  # Umbral mínimo 60%
-                # Encontrar la referencia correspondiente
-                for ref in referencias:
-                    if self.limpiar_texto(ref['nombre_oficial']) == mejor_fuzzy[0]:
-                        return {
-                            **ref,
-                            'metodo': 'FUZZY_ALTO' if mejor_fuzzy[1] >= 80 else 'FUZZY_BAJO',
-                            'confianza': mejor_fuzzy[1] / 100.0
-                        }
-            
-            return None
-            
-        except Exception as e:
-            print(f"Error buscando referencias: {e}")
-            return None
+    
     
     def guardar_resultados(self, resultados):
         """Guardar resultados de normalización en la base de datos"""
@@ -2308,8 +1940,13 @@ def mostrar_carga_archivos_datos():
         else:
             st.warning("⚠️ No hay archivos válidos para procesar. Revisa los errores mostrados arriba.")
 
+            
+
 def mostrar_carga_referencias():
-    """Interfaz para cargar archivos de referencia (SEPOMEX/INEGI)"""
+    """
+    Versión más simple que solo oculta el botón después de cualquier carga exitosa
+    ALTERNATIVA si la versión de arriba es muy compleja
+    """
     
     st.markdown("### 📚 Gestión de Referencias (SEPOMEX/INEGI)")
     
@@ -2348,52 +1985,130 @@ def mostrar_carga_referencias():
         try:
             df_ref = pd.read_csv(archivo_referencia)
             
-            st.markdown("**Estructura del archivo:**")
+            st.markdown("**Vista previa del archivo:**")
             st.dataframe(df_ref.head(), use_container_width=True)
             
-            # Validar columnas mínimas requeridas
+            # Información del archivo
+            st.info(f"""
+            **Información del archivo:**
+            - Registros: {len(df_ref):,}
+            - Columnas: {list(df_ref.columns)}
+            - Tipo seleccionado: {tipo_ref}
+            """)
+            
+            # Validaciones básicas
             columnas_requeridas = ['codigo_oficial', 'nombre_oficial']
             columnas_faltantes = set(columnas_requeridas) - set(df_ref.columns)
             
             if columnas_faltantes:
                 st.error(f"Faltan columnas requeridas: {', '.join(columnas_faltantes)}")
             else:
-                if st.button("💾 Cargar Referencia", type="primary"):
-                    cargar_nueva_referencia(df_ref, tipo_ref, fuente_ref, archivo_referencia.name)
+                # ===== CONTROL SIMPLE DE BOTÓN =====
+                
+                # Verificar si ya hubo una carga exitosa en esta sesión
+                if not st.session_state.get('carga_exitosa_reciente', False):
+                    
+                    # MOSTRAR BOTÓN
+                    if st.button("🚀 CARGAR CON ACTUALIZACIÓN AUTOMÁTICA", type="primary"):
+                        
+                        st.write("🔄 INICIANDO CARGA...")
+                        
+                        # Ejecutar la carga
+                        success = cargar_referencias_con_actualizacion_automatica(
+                            df_ref, tipo_ref, fuente_ref, archivo_referencia.name
+                        )
+                        
+                        if success:
+                            # MARCAR COMO EXITOSA
+                            st.session_state['carga_exitosa_reciente'] = True
+                            st.success("✅ CARGA COMPLETADA - ACTUALIZANDO VISTA...")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("❌ Error en la carga")
+                
+                else:
+                    # MOSTRAR MENSAJE EN LUGAR DEL BOTÓN
+                    st.success("""
+                    ✅ **CARGA COMPLETADA EXITOSAMENTE**
+                    
+                    El archivo ha sido procesado y las referencias están actualizadas.
+                    """)
+                    
+                    # Botón para reiniciar (opcional)
+                    if st.button("🔄 Cargar Otro Archivo"):
+                        st.session_state['carga_exitosa_reciente'] = False
+                        st.rerun()
         
         except Exception as e:
             st.error(f"Error leyendo archivo de referencia: {str(e)}")
 
+    
+
 def mostrar_referencias_actuales():
-    """Mostrar las referencias actuales en el sistema"""
+    """
+    Mostrar las referencias actuales en el sistema - VERSIÓN MEJORADA
+    REEMPLAZAR la función mostrar_referencias_actuales() existente por esta
+    """
     
     sistema = SistemaNormalizacion()
     
-    try:
-        with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT tipo_catalogo, COUNT(*) as total_referencias,
-                       MAX(fecha_actualizacion) as ultima_actualizacion
-                FROM referencias_normalizacion 
-                WHERE activo = true
-                GROUP BY tipo_catalogo
-                ORDER BY tipo_catalogo
-            """))
-            
-            referencias = [dict(row) for row in result]
-        
-        if referencias:
-            st.markdown("#### 📋 Referencias Actuales:")
-            
-            df_referencias = pd.DataFrame(referencias)
-            df_referencias.columns = ['Tipo', 'Total Referencias', 'Última Actualización']
-            
-            st.dataframe(df_referencias, use_container_width=True, hide_index=True)
-        else:
-            st.info("No hay referencias cargadas en el sistema")
+    # Crear un container que se pueda actualizar
+    referencias_container = st.container()
     
-    except Exception as e:
-        st.error(f"Error consultando referencias: {str(e)}")
+    with referencias_container:
+        try:
+            with sistema.engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT tipo_catalogo, COUNT(*) as total_referencias,
+                           MAX(fecha_actualizacion) as ultima_actualizacion
+                    FROM referencias_normalizacion 
+                    WHERE activo = true
+                    GROUP BY tipo_catalogo
+                    ORDER BY tipo_catalogo
+                """))
+                
+                # CORRECCIÓN: Manejar resultados vacíos
+                referencias = []
+                for row in result:
+                    referencias.append(dict(row._mapping))
+            
+            if referencias:
+                st.markdown("#### 📋 Referencias Actuales:")
+                
+                df_referencias = pd.DataFrame(referencias)
+                df_referencias.columns = ['Tipo', 'Total Referencias', 'Última Actualización']
+                
+                # Formatear fecha para mejor legibilidad
+                df_referencias['Última Actualización'] = pd.to_datetime(
+                    df_referencias['Última Actualización']
+                ).dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                st.dataframe(df_referencias, use_container_width=True, hide_index=True)
+                
+                # Mostrar estadísticas adicionales
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    total_global = df_referencias['Total Referencias'].sum()
+                    st.metric("Total Global", f"{total_global:,}")
+                
+                with col2:
+                    tipos_disponibles = len(df_referencias)
+                    st.metric("Tipos de Catálogo", tipos_disponibles)
+                
+                with col3:
+                    # Fecha más reciente
+                    fecha_mas_reciente = pd.to_datetime(
+                        df_referencias['Última Actualización']
+                    ).max().strftime('%Y-%m-%d')
+                    st.metric("Última Carga", fecha_mas_reciente)
+                
+            else:
+                st.info("📝 No hay referencias cargadas en el sistema. Sube archivos de referencia SEPOMEX/INEGI para mejorar la precisión.")
+        
+        except Exception as e:
+            st.error(f"Error consultando referencias: {str(e)}")
 
 # ========================================
 # CORRECCIÓN PARA ERROR EN PROCESAMIENTO TIEMPO REAL
@@ -2403,6 +2118,8 @@ def mostrar_procesamiento_tiempo_real():
     """Mostrar el progreso de procesamiento en tiempo real - SIN BOTÓN ELIMINAR"""
     
     st.markdown("### ⚙️ Monitor de Procesamiento")
+
+
     
     # Obtener archivos en procesamiento
     sistema = SistemaNormalizacion()
@@ -2609,46 +2326,7 @@ def procesar_archivos_cargados(archivos_validos, tipo_catalogo, division):
     status_text.text("✅ Procesamiento completado")
     st.balloons()
 
-def cargar_nueva_referencia(df_ref, tipo_ref, fuente_ref, nombre_archivo):
-    """Cargar nueva referencia al sistema"""
-    
-    sistema = SistemaNormalizacion()
-    
-    try:
-        # Preparar datos para inserción
-        registros_referencia = []
-        
-        for _, row in df_ref.iterrows():
-            registro = {
-                'tipo_catalogo': tipo_ref,
-                'codigo_oficial': str(row.get('codigo_oficial', '')),
-                'nombre_oficial': str(row.get('nombre_oficial', '')),
-                'nombre_alternativo': json.dumps(row.get('nombres_alternativos', [])) if 'nombres_alternativos' in row else None,
-                'coordenadas_lat': float(row['coordenadas_lat']) if 'coordenadas_lat' in row and pd.notna(row['coordenadas_lat']) else None,
-                'coordenadas_lng': float(row['coordenadas_lng']) if 'coordenadas_lng' in row and pd.notna(row['coordenadas_lng']) else None,
-                'estado_padre': str(row.get('estado_padre', '')) if 'estado_padre' in row else None,
-                'municipio_padre': str(row.get('municipio_padre', '')) if 'municipio_padre' in row else None
-            }
-            registros_referencia.append(registro)
-        
-        # Insertar en base de datos
-        df_insert = pd.DataFrame(registros_referencia)
-        df_insert.to_sql('referencias_normalizacion', sistema.engine, if_exists='append', index=False)
-        
-        st.success(f"✅ Se cargaron {len(registros_referencia)} referencias de {fuente_ref}")
-        
-        # Mostrar estadísticas
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Registros Cargados", len(registros_referencia))
-        with col2:
-            con_coordenadas = sum(1 for r in registros_referencia if r['coordenadas_lat'] is not None)
-            st.metric("Con Coordenadas", con_coordenadas)
-        with col3:
-            st.metric("Fuente", fuente_ref)
-    
-    except Exception as e:
-        st.error(f"Error cargando referencia: {str(e)}")
+
 
 def mostrar_resultados_archivo(id_archivo):
     """Mostrar resultados detallados de un archivo procesado - RESPONSIVO"""
@@ -3226,39 +2904,7 @@ def mostrar_dashboard_vacio():
     """)
 
 
-def mostrar_referencias_actuales():
-    """Mostrar las referencias actuales en el sistema - CORREGIDO"""
-    
-    sistema = SistemaNormalizacion()
-    
-    try:
-        with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT tipo_catalogo, COUNT(*) as total_referencias,
-                       MAX(fecha_actualizacion) as ultima_actualizacion
-                FROM referencias_normalizacion 
-                WHERE activo = true
-                GROUP BY tipo_catalogo
-                ORDER BY tipo_catalogo
-            """))
-            
-            # CORRECCIÓN: Manejar resultados vacíos
-            referencias = []
-            for row in result:
-                referencias.append(dict(row._mapping))
-        
-        if referencias:
-            st.markdown("#### 📋 Referencias Actuales:")
-            
-            df_referencias = pd.DataFrame(referencias)
-            df_referencias.columns = ['Tipo', 'Total Referencias', 'Última Actualización']
-            
-            st.dataframe(df_referencias, use_container_width=True, hide_index=True)
-        else:
-            st.info("📝 No hay referencias cargadas en el sistema. Sube archivos de referencia SEPOMEX/INEGI para mejorar la precisión.")
-    
-    except Exception as e:
-        st.error(f"Error consultando referencias: {str(e)}")
+
 
 
 def mostrar_graficos_analisis():
@@ -4210,437 +3856,10 @@ ID Archivo: {id_archivo}
         st.info("👆 Marca la casilla de confirmación para continuar con la eliminación")
 
 
-# ========================================
-# FUNCIÓN ALTERNATIVA MÁS SEGURA
-# ========================================
 
-def eliminar_archivo_procesado_seguro(id_archivo):
-    """Versión más segura de eliminación con pasos claros"""
-    
-    # Usar sistema global si existe
-    if 'sistema_global' in st.session_state:
-        sistema = st.session_state.sistema_global
-    else:
-        # Crear sistema solo si no existe
-        sistema = SistemaNormalizacion()
-    
-    st.markdown(f"### 🗑️ Eliminar Archivo")
-    st.markdown(f"**ID:** `{id_archivo}`")
-    
-    try:
-        # PASO 1: Mostrar información del archivo
-        with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT a.nombre_archivo, a.tipo_catalogo, a.division, a.total_registros,
-                       COUNT(r.id_resultado) as resultados_procesados
-                FROM archivos_cargados a
-                LEFT JOIN resultados_normalizacion r ON a.id_archivo = r.id_archivo
-                WHERE a.id_archivo = :id_archivo
-                GROUP BY a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division, a.total_registros
-            """), {'id_archivo': id_archivo})
-            
-            archivo_info = result.fetchone()
-            
-            if not archivo_info:
-                st.error("❌ Archivo no encontrado en la base de datos")
-                return
-            
-            info = dict(archivo_info._mapping)
-        
-        # Mostrar información detallada
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.info(f"""
-            **📄 Archivo:** {info['nombre_archivo']}  
-            **📋 Tipo:** {info['tipo_catalogo']}  
-            **🏢 División:** {info['division']}
-            """)
-        
-        with col2:
-            st.info(f"""
-            **📊 Registros originales:** {info['total_registros']:,}  
-            **🔄 Resultados procesados:** {info['resultados_procesados']:,}
-            """)
-        
-        # PASO 2: Confirmaciones
-        st.markdown("#### ⚠️ Confirmación de Eliminación")
-        
-        confirmar1 = st.checkbox(
-            f"✅ Entiendo que se eliminará el archivo **{info['nombre_archivo']}**",
-            key=f"conf1_{id_archivo}"
-        )
-        
-        confirmar2 = st.checkbox(
-            f"✅ Entiendo que se eliminarán **{info['resultados_procesados']:,} resultados** procesados",
-            key=f"conf2_{id_archivo}"
-        )
-        
-        confirmar3 = st.checkbox(
-            "✅ Entiendo que **esta acción NO se puede deshacer**",
-            key=f"conf3_{id_archivo}"
-        )
-        
-        # PASO 3: Botón de eliminación (solo si todas las confirmaciones están marcadas)
-        if confirmar1 and confirmar2 and confirmar3:
-            
-            if st.button(
-                f"🗑️ ELIMINAR ARCHIVO DEFINITIVAMENTE", 
-                key=f"delete_final_{id_archivo}",
-                type="primary"
-            ):
-                
-                # Mostrar progreso
-                progress = st.progress(0)
-                status = st.empty()
-                
-                try:
-                    with sistema.engine.connect() as conn:
-                        # Paso 1: Eliminar resultados
-                        status.text("🔄 Eliminando resultados de normalización...")
-                        progress.progress(0.3)
-                        
-                        result = conn.execute(text("""
-                            DELETE FROM resultados_normalizacion 
-                            WHERE id_archivo = :id_archivo
-                        """), {'id_archivo': id_archivo})
-                        
-                        resultados_eliminados = result.rowcount
-                        
-                        # Paso 2: Eliminar archivo
-                        status.text("🔄 Eliminando registro del archivo...")
-                        progress.progress(0.6)
-                        
-                        result = conn.execute(text("""
-                            DELETE FROM archivos_cargados 
-                            WHERE id_archivo = :id_archivo
-                        """), {'id_archivo': id_archivo})
-                        
-                        archivos_eliminados = result.rowcount
-                        
-                        # Paso 3: Confirmar transacción
-                        status.text("🔄 Confirmando eliminación...")
-                        progress.progress(0.9)
-                        
-                        conn.commit()
-                        
-                        # Finalizar
-                        progress.progress(1.0)
-                        status.text("✅ Eliminación completada")
-                        
-                        # Mostrar resultado final
-                        st.success(f"""
-                        ### ✅ Eliminación Exitosa
-                        
-                        **Elementos eliminados:**
-                        - 📄 **Archivo:** {info['nombre_archivo']}
-                        - 📊 **Resultados:** {resultados_eliminados:,} registros
-                        - 🗄️ **Registro de archivo:** {archivos_eliminados} entrada
-                        
-                        **⚡ La página se recargará automáticamente...**
-                        """)
-                        
-                        # Auto-recarga después de mostrar el mensaje
-                        time.sleep(2)
-                        st.rerun()
-                        
-                except Exception as e:
-                    st.error(f"❌ **Error durante la eliminación:** {str(e)}")
-                    
-                    # Log detallado para debugging
-                    st.code(f"""
-DETALLES DEL ERROR:
-- Función: eliminar_archivo_procesado_seguro()
-- ID Archivo: {id_archivo}
-- Error: {str(e)}
-- Tipo: {type(e).__name__}
-                    """)
-        else:
-            st.warning("⚠️ Debes marcar todas las confirmaciones para continuar")
-            
-    except Exception as e:
-        st.error(f"❌ Error consultando información del archivo: {str(e)}")
 
-# ========================================
-# FUNCIONES DE PRUEBA ESPECÍFICAS PASO 2
-# ========================================
 
-def probar_paso2_completo():
-    """
-    Probar la implementación completa del Paso 2
-    EJECUTAR DESPUÉS DE IMPLEMENTAR LOS CAMBIOS
-    """
-    
-    print("🧪 PROBANDO PASO 2 - LIMPIEZA INTELIGENTE COMPLETA")
-    print("=" * 60)
-    
-    # Casos de prueba específicos por tipo
-    casos_prueba = {
-        'ESTADOS': [
-            ("b.c.", "BAJA CALIFORNIA"),
-            ("CDMX", "CIUDAD DE MEXICO"),
-            ("Estado de México", "ESTADO DE MEXICO"), 
-            ("N.L.", "NUEVO LEON"),
-            ("distrito federal", "CIUDAD DE MEXICO")
-        ],
-        'CIUDADES': [
-            ("cd. juárez", "CIUDAD JUAREZ"),
-            ("guadalajara", "GUADALAJARA"),
-            ("CIUDAD DE MÉXICO", "CIUDAD DE MEXICO"),
-            ("gdle", "GUADALAJARA"),
-            ("MTY", "MONTERREY")
-        ],
-        'MUNICIPIOS': [
-            ("mpio. guadalajara", "GUADALAJARA"),
-            ("MUNICIPIO TIJUANA", "TIJUANA"),
-            ("benito juárez", "BENITO JUAREZ")
-        ],
-        'COLONIAS': [
-            ("col. centro", "CENTRO"),
-            ("DOCT0RES", "DOCTORES"),
-            ("STA. MARÍA LA RIBERA", "SANTA MARIA LA RIBERA"),
-            ("fracc. residencial", "RESIDENCIAL"),
-            ("centro histórico", "CENTRO HISTORICO")
-        ]
-    }
-    
-    try:
-        from sistema_completo_normalizacion import SistemaNormalizacion
-        sistema = SistemaNormalizacion()
-        
-        total_casos = 0
-        casos_exitosos = 0
-        
-        for tipo, casos in casos_prueba.items():
-            print(f"\n📋 PROBANDO TIPO: {tipo}")
-            print("-" * 40)
-            
-            for caso_original, esperado in casos:
-                total_casos += 1
-                print(f"\n🔍 Caso {total_casos}:")
-                print(f"   Original: '{caso_original}'")
-                print(f"   Esperado: '{esperado}'")
-                
-                try:
-                    if hasattr(sistema, 'limpiar_texto_inteligente'):
-                        resultado = sistema.limpiar_texto_inteligente(caso_original, tipo)
-                        print(f"   Resultado: '{resultado}'")
-                        
-                        # Verificar si el resultado es correcto o al menos mejorado
-                        if resultado == esperado:
-                            print("   ✅ PERFECTO - Coincidencia exacta")
-                            casos_exitosos += 1
-                        elif esperado in resultado or resultado in esperado:
-                            print("   ✅ BUENO - Coincidencia parcial")
-                            casos_exitosos += 1
-                        elif len(resultado) > len(caso_original.upper().strip()):
-                            print("   ⚡ MEJORADO - Texto expandido")
-                            casos_exitosos += 1
-                        else:
-                            print("   ⚠️ DIFERENTE - Verificar manualmente")
-                    else:
-                        print("   ❌ Método limpiar_texto_inteligente no encontrado")
-                        
-                except Exception as e:
-                    print(f"   ❌ Error: {e}")
-        
-        print(f"\n🎉 RESUMEN PASO 2:")
-        print(f"   Total casos probados: {total_casos}")
-        print(f"   Casos exitosos: {casos_exitosos}")
-        print(f"   Tasa de éxito: {casos_exitosos/total_casos*100:.1f}%")
-        
-        if casos_exitosos >= total_casos * 0.7:  # 70% de éxito mínimo
-            print(f"\n✅ PASO 2 COMPLETADO EXITOSAMENTE")
-            print(f"Proceder al Paso 3: Mejorar algoritmo de coincidencias")
-            return True
-        else:
-            print(f"\n⚠️ PASO 2 NECESITA AJUSTES")
-            print(f"Revisar los casos fallidos y ajustar diccionarios")
-            return False
-        
-    except ImportError:
-        print("❌ No se pudo importar SistemaNormalizacion")
-        print("Asegúrate de que el archivo principal esté guardado como 'sistema_completo_normalizacion.py'")
-        return False
-    except Exception as e:
-        print(f"❌ Error en prueba: {e}")
-        return False
 
-# ========================================
-# FUNCIÓN DE COMPARACIÓN ANTES/DESPUÉS
-# ========================================
-
-def comparar_limpieza_antes_despues_paso2():
-    """
-    Comparar limpieza original vs inteligente - Paso 2
-    """
-    
-    print("🔍 COMPARACIÓN ANTES/DESPUÉS - PASO 2")
-    print("=" * 50)
-    
-    casos_comparacion = [
-        "B.C.",
-        "DOCT0RES", 
-        "STA. MARÍA",
-        "CENTRO HISTÓRICO",
-        "CD. JUÁREZ",
-        "EDO. MEX.",
-        "FRACC. RESIDENCIAL"
-    ]
-    
-    try:
-        from sistema_completo_normalizacion import SistemaNormalizacion
-        sistema = SistemaNormalizacion()
-        
-        for caso in casos_comparacion:
-            print(f"\nTexto: '{caso}'")
-            
-            # Limpieza básica (simulación del método original)
-            original_simulado = caso.upper().strip()
-            # Quitar acentos básico
-            import unicodedata
-            original_simulado = unicodedata.normalize('NFD', original_simulado)
-            original_simulado = ''.join(char for char in original_simulado if unicodedata.category(char) != 'Mn')
-            print(f"  Original (simulado): '{original_simulado}'")
-            
-            # Limpieza inteligente
-            if hasattr(sistema, 'limpiar_texto_inteligente'):
-                inteligente = sistema.limpiar_texto_inteligente(caso, 'COLONIAS')
-                print(f"  Inteligente: '{inteligente}'")
-                
-                # Mostrar mejora
-                if len(inteligente) > len(original_simulado):
-                    print(f"  🎯 MEJORA: +{len(inteligente) - len(original_simulado)} caracteres")
-                elif inteligente != original_simulado:
-                    print(f"  🔄 CAMBIO: Texto transformado")
-                else:
-                    print(f"  ➡️ SIN CAMBIO")
-            
-            print("  " + "="*40)
-    
-    except Exception as e:
-        print(f"❌ Error en comparación: {e}")
-
-# ========================================
-# VERIFICACIÓN PASO 2
-# ========================================
-
-def verificar_paso2_implementacion():
-    """
-    Verificar que el Paso 2 está implementado correctamente
-    """
-    
-    print("🔍 VERIFICANDO IMPLEMENTACIÓN PASO 2...")
-    
-    try:
-        from sistema_completo_normalizacion import SistemaNormalizacion
-        sistema = SistemaNormalizacion()
-        
-        # Verificar que los métodos del Paso 1 existen
-        metodos_paso1 = [
-            'inicializar_diccionarios_inteligentes',
-            'expandir_abreviaciones_inteligente',
-            'corregir_errores_tipograficos'
-        ]
-        
-        for metodo in metodos_paso1:
-            if hasattr(sistema, metodo):
-                print(f"✅ Paso 1 - Método {metodo} disponible")
-            else:
-                print(f"❌ Paso 1 - Método {metodo} falta")
-                return False
-        
-        # Verificar que los nuevos métodos del Paso 2 existen
-        metodos_paso2 = [
-            'limpiar_texto_inteligente',
-            'limpieza_especifica_por_tipo',
-            'inicializar_patrones_limpieza'
-        ]
-        
-        for metodo in metodos_paso2:
-            if hasattr(sistema, metodo):
-                print(f"✅ Paso 2 - Método {metodo} disponible")
-            else:
-                print(f"❌ Paso 2 - Método {metodo} falta - IMPLEMENTAR")
-                return False
-        
-        # Verificar que los diccionarios están cargados
-        diccionarios_requeridos = ['abreviaciones', 'correcciones', 'sinonimos']
-        
-        for diccionario in diccionarios_requeridos:
-            if hasattr(sistema, diccionario) and len(getattr(sistema, diccionario)) > 0:
-                print(f"✅ Diccionario {diccionario} cargado ({len(getattr(sistema, diccionario))} elementos)")
-            else:
-                print(f"❌ Diccionario {diccionario} no cargado")
-                return False
-        
-        # Probar caso simple
-        try:
-            resultado = sistema.limpiar_texto_inteligente("B.C.", "ESTADOS")
-            if "BAJA CALIFORNIA" in resultado:
-                print("✅ Limpieza inteligente funcionando correctamente")
-                print(f"   Resultado de prueba: '{resultado}'")
-            else:
-                print(f"⚠️ Resultado inesperado: '{resultado}' (esperado que contenga 'BAJA CALIFORNIA')")
-        except Exception as e:
-            print(f"❌ Error probando limpieza: {e}")
-            return False
-        
-        print("\n🎉 PASO 2 VERIFICADO CORRECTAMENTE")
-        print("Ejecutar probar_paso2_completo() para pruebas detalladas")
-        return True
-        
-    except ImportError:
-        print("❌ Error importando SistemaNormalizacion")
-        print("Asegúrate de que el archivo esté guardado correctamente")
-        return False
-    except Exception as e:
-        print(f"❌ Error en verificación: {e}")
-        return False
-
-# ========================================
-# INSTRUCCIONES DE IMPLEMENTACIÓN
-# ========================================
-
-def mostrar_instrucciones_paso2():
-    """
-    Mostrar instrucciones claras para implementar el Paso 2
-    """
-    
-    print("📋 INSTRUCCIONES PARA IMPLEMENTAR PASO 2")
-    print("=" * 50)
-    
-    print("""
-CAMBIOS NECESARIOS EN TU ARCHIVO PRINCIPAL:
-
-1. REEMPLAZAR el método limpiar_texto() por:
-   - Cambiar nombre a limpiar_texto_inteligente()
-   - Agregar parámetro tipo_catalogo
-   - Usar la lógica del código arriba
-
-2. ACTUALIZAR el método normalizar_registro():
-   - Cambiar limpiar_texto() por limpiar_texto_inteligente()
-   - Pasar el tipo_catalogo como parámetro
-
-3. VERIFICAR que los métodos del Paso 1 estén en la clase:
-   - inicializar_diccionarios_inteligentes()
-   - expandir_abreviaciones_inteligente()
-   - corregir_errores_tipograficos()
-   - limpieza_especifica_por_tipo()
-   - inicializar_patrones_limpieza()
-
-4. PROBAR la implementación:
-   - Ejecutar verificar_paso2_implementacion()
-   - Ejecutar probar_paso2_completo()
-   - Ejecutar comparar_limpieza_antes_despues_paso2()
-
-ORDEN DE EJECUCIÓN:
-1. Implementar cambios en el código
-2. Guardar archivo
-3. Ejecutar verificar_paso2_implementacion()
-4. Si pasa, ejecutar probar_paso2_completo()
-5. Analizar resultados y ajustar si es necesario
-    """)
 
 # ========================================
 # HERRAMIENTAS DE DIAGNÓSTICO PARA ELIMINACIÓN
@@ -4840,316 +4059,6 @@ Tipo: {type(e).__name__}
         st.error(f"❌ Error obteniendo info de sesión: {str(e)}")
 
 
-def test_eliminacion_con_logs(id_archivo):
-    """
-    Test de eliminación con logging detallado paso a paso
-    """
-    
-    st.markdown("### 🔬 Test de Eliminación con Logs Detallados")
-    st.markdown(f"**ID del archivo:** `{id_archivo}`")
-    
-    if st.button("🚀 Ejecutar Test Detallado", key=f"test_detailed_{id_archivo}"):
-        
-        if 'sistema_global' not in st.session_state:
-            st.session_state.sistema_global = SistemaNormalizacion()
-        
-        sistema = st.session_state.sistema_global
-        
-        logs = []
-        
-        try:
-            logs.append("🔄 Iniciando test de eliminación...")
-            st.write(logs[-1])
-            
-            with sistema.engine.connect() as conn:
-                
-                # LOG: Estado inicial
-                logs.append("📊 Consultando estado inicial...")
-                st.write(logs[-1])
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                archivos_inicial = result.fetchone()[0]
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM resultados_normalizacion WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                resultados_inicial = result.fetchone()[0]
-                
-                logs.append(f"📋 Estado inicial: {archivos_inicial} archivos, {resultados_inicial} resultados")
-                st.write(logs[-1])
-                
-                if archivos_inicial == 0 and resultados_inicial == 0:
-                    st.warning("⚠️ El archivo ya no existe en la base de datos")
-                    return
-                
-                # LOG: Iniciando transacción
-                logs.append("🔄 Iniciando transacción de eliminación...")
-                st.write(logs[-1])
-                
-                # STEP 1: Eliminar resultados
-                logs.append("🗑️ Ejecutando DELETE en resultados_normalizacion...")
-                st.write(logs[-1])
-                
-                delete_result1 = conn.execute(text("""
-                    DELETE FROM resultados_normalizacion WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                
-                eliminados_resultados = delete_result1.rowcount
-                logs.append(f"✅ DELETE resultados reporta: {eliminados_resultados} eliminados")
-                st.write(logs[-1])
-                
-                # STEP 2: Eliminar archivo
-                logs.append("🗑️ Ejecutando DELETE en archivos_cargados...")
-                st.write(logs[-1])
-                
-                delete_result2 = conn.execute(text("""
-                    DELETE FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                
-                eliminados_archivos = delete_result2.rowcount
-                logs.append(f"✅ DELETE archivos reporta: {eliminados_archivos} eliminados")
-                st.write(logs[-1])
-                
-                # STEP 3: Verificar antes del commit
-                logs.append("🔍 Verificando estado ANTES del commit...")
-                st.write(logs[-1])
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                archivos_pre_commit = result.fetchone()[0]
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM resultados_normalizacion WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                resultados_pre_commit = result.fetchone()[0]
-                
-                logs.append(f"📋 Pre-commit: {archivos_pre_commit} archivos, {resultados_pre_commit} resultados")
-                st.write(logs[-1])
-                
-                # STEP 4: COMMIT CRÍTICO
-                logs.append("💾 Ejecutando COMMIT...")
-                st.write(logs[-1])
-                
-                conn.commit()
-                
-                logs.append("✅ COMMIT ejecutado exitosamente")
-                st.write(logs[-1])
-                
-                # STEP 5: Verificar después del commit
-                logs.append("🔍 Verificando estado DESPUÉS del commit...")
-                st.write(logs[-1])
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                archivos_final = result.fetchone()[0]
-                
-                result = conn.execute(text("""
-                    SELECT COUNT(*) FROM resultados_normalizacion WHERE id_archivo = :id
-                """), {'id': id_archivo})
-                resultados_final = result.fetchone()[0]
-                
-                logs.append(f"📋 Estado final: {archivos_final} archivos, {resultados_final} resultados")
-                st.write(logs[-1])
-                
-                # RESULTADO FINAL
-                if archivos_final == 0 and resultados_final == 0:
-                    st.success("🎉 **ELIMINACIÓN EXITOSA**")
-                    logs.append("🎉 ELIMINACIÓN COMPLETADA EXITOSAMENTE")
-                else:
-                    st.error("❌ **ELIMINACIÓN FALLÓ**")
-                    logs.append(f"❌ ELIMINACIÓN FALLÓ - Quedan {archivos_final} archivos y {resultados_final} resultados")
-                
-                st.write(logs[-1])
-                
-                # Mostrar resumen de logs
-                st.markdown("### 📝 Log Completo:")
-                for i, log in enumerate(logs, 1):
-                    st.text(f"{i:2d}. {log}")
-        
-        except Exception as e:
-            logs.append(f"❌ ERROR: {str(e)}")
-            st.error(logs[-1])
-            
-            st.markdown("### 📝 Log hasta el error:")
-            for i, log in enumerate(logs, 1):
-                st.text(f"{i:2d}. {log}")
-            
-            st.code(f"""
-ERROR COMPLETO:
-{str(e)}
-
-Tipo: {type(e).__name__}
-""")
-
-
-def verificar_configuracion_database():
-    """
-    Verificar la configuración de la base de datos
-    """
-    
-    st.markdown("### ⚙️ Verificación de Configuración")
-    
-    # Mostrar configuración actual
-    st.code(f"""
-CONFIGURACIÓN ACTUAL:
-Host: {DATABASE_CONFIG['host']}
-Puerto: {DATABASE_CONFIG['port']}
-Base de datos: {DATABASE_CONFIG['database']}
-Usuario: {DATABASE_CONFIG['user']}
-Password: {'*' * len(DATABASE_CONFIG['password'])}
-""")
-    
-    # Test de configuración alternativa
-    if st.button("🔧 Test con Usuario Postgres"):
-        try:
-            # Crear conexión directa con psycopg2
-            import psycopg2
-            
-            conn = psycopg2.connect(
-                host=DATABASE_CONFIG['host'],
-                port=DATABASE_CONFIG['port'],
-                database=DATABASE_CONFIG['database'],
-                user=DATABASE_CONFIG['user'],
-                password=DATABASE_CONFIG['password']
-            )
-            
-            cursor = conn.cursor()
-            
-            # Test básico
-            cursor.execute("SELECT 1")
-            result = cursor.fetchone()[0]
-            
-            if result == 1:
-                st.success("✅ Conexión directa con psycopg2 OK")
-                
-                # Test de permisos
-                cursor.execute("""
-                    SELECT has_table_privilege(%s, 'archivos_cargados', 'DELETE'),
-                           has_table_privilege(%s, 'resultados_normalizacion', 'DELETE')
-                """, (DATABASE_CONFIG['user'], DATABASE_CONFIG['user']))
-                
-                permisos = cursor.fetchone()
-                
-                if permisos[0] and permisos[1]:
-                    st.success("✅ Permisos DELETE OK")
-                else:
-                    st.error(f"❌ Permisos DELETE: archivos={permisos[0]}, resultados={permisos[1]}")
-                    
-            conn.close()
-            
-        except Exception as e:
-            st.error(f"❌ Error con conexión directa: {str(e)}")
-
-
-# ========================================
-# FUNCIÓN PRINCIPAL DE DIAGNÓSTICO
-# ========================================
-
-def ejecutar_diagnostico_completo(id_archivo):
-    """
-    Ejecutar todos los diagnósticos en secuencia
-    """
-    
-    st.markdown("# 🔬 DIAGNÓSTICO COMPLETO DEL PROBLEMA")
-    
-    # Diagnóstico 1: BD General
-    diagnostico_completo_bd()
-    
-    st.markdown("---")
-    
-    # Diagnóstico 2: Configuración
-    verificar_configuracion_database()
-    
-    st.markdown("---")
-    
-    # Diagnóstico 3: Test específico del archivo
-    test_eliminacion_con_logs(id_archivo)
-
-
-# ========================================
-# FUNCIONES DE TEST Y SOLUCIÓN PARA ELIMINAR
-# AGREGAR AL FINAL DEL ARCHIVO (antes del if __name__ == "__main__":)
-# ========================================
-
-def test_psycopg2_simple():
-    """
-    Test directo con psycopg2 para verificar que DELETE funciona
-    AGREGAR AL FINAL DE TU ARCHIVO
-    """
-    
-    st.markdown("### 🧪 Test psycopg2 Directo")
-    
-    if st.button("🚀 Probar DELETE con psycopg2"):
-        try:
-            import psycopg2
-            import uuid
-            import time
-            
-            # Conectar directamente con psycopg2
-            conn = psycopg2.connect(
-                host=DATABASE_CONFIG['host'],
-                port=DATABASE_CONFIG['port'],
-                database=DATABASE_CONFIG['database'],
-                user=DATABASE_CONFIG['user'],
-                password=DATABASE_CONFIG['password']
-            )
-            
-            cursor = conn.cursor()
-            
-            # PASO 1: Crear registro de prueba
-            test_id = str(uuid.uuid4())  # Generar UUID válido            
-            st.info("1️⃣ Creando registro de prueba...")
-            
-            cursor.execute("""
-                INSERT INTO archivos_cargados 
-                (id_archivo, nombre_archivo, tipo_catalogo, division, total_registros)
-                VALUES (%s, 'TEST_DELETE.csv', 'ESTADOS', 'TEST', 5)
-            """, (test_id,))
-            
-            conn.commit()
-            st.success("✅ Registro creado")
-            
-            # PASO 2: Verificar que existe
-            cursor.execute("SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = %s", (test_id,))
-            count_antes = cursor.fetchone()[0]
-            st.info(f"2️⃣ Registros antes: {count_antes}")
-            
-            # PASO 3: ELIMINAR
-            st.info("3️⃣ Ejecutando DELETE...")
-            
-            cursor.execute("DELETE FROM archivos_cargados WHERE id_archivo = %s", (test_id,))
-            eliminados = cursor.rowcount
-            
-            st.info(f"   📊 Registros eliminados reportados: {eliminados}")
-            
-            # PASO 4: COMMIT EXPLÍCITO
-            st.info("4️⃣ Haciendo COMMIT...")
-            conn.commit()
-            
-            # PASO 5: Verificar eliminación
-            cursor.execute("SELECT COUNT(*) FROM archivos_cargados WHERE id_archivo = %s", (test_id,))
-            count_despues = cursor.fetchone()[0]
-            st.info(f"5️⃣ Registros después: {count_despues}")
-            
-            # RESULTADO
-            if count_despues == 0:
-                st.success("🎉 **psycopg2 DELETE FUNCIONA PERFECTAMENTE**")
-                st.success("✅ El problema es SQLAlchemy, no PostgreSQL")
-            else:
-                st.error("❌ DELETE no funcionó ni con psycopg2")
-                st.error("🔍 El problema es más profundo (permisos, etc.)")
-            
-            conn.close()
-            
-        except Exception as e:
-            st.error(f"❌ Error en test psycopg2: {str(e)}")
-            st.code(str(e))
-
-
 def eliminar_archivo_ultra_simple(id_archivo):
     """
     Eliminación ultra simple usando psycopg2 directo
@@ -5269,76 +4178,6 @@ Función: eliminar_archivo_ultra_simple()
                 """)
 
 
-# ========================================
-# MODIFICACIÓN PARA EL DASHBOARD
-# ========================================
-
-def mostrar_procesamiento_tiempo_real_FIXED():
-    """
-    Versión corregida del procesamiento en tiempo real
-    REEMPLAZAR LA FUNCIÓN EXISTENTE POR ESTA
-    """
-    
-    st.markdown("### ⚙️ Monitor de Procesamiento")
-    
-    # AGREGAR EL TEST TEMPORALMENTE AQUÍ
-    st.markdown("---")
-    test_psycopg2_simple()  # ← ESTA ES LA LÍNEA QUE NECESITAS
-    st.markdown("---")
-    
-    # Obtener archivos en procesamiento
-    sistema = SistemaNormalizacion()
-    
-    try:
-        with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division,
-                       a.total_registros, a.fecha_carga, a.estado_procesamiento,
-                       COALESCE(r.procesados, 0) as registros_procesados
-                FROM archivos_cargados a
-                LEFT JOIN (
-                    SELECT id_archivo, COUNT(*) as procesados
-                    FROM resultados_normalizacion
-                    GROUP BY id_archivo
-                ) r ON a.id_archivo = r.id_archivo
-                WHERE a.fecha_carga >= CURRENT_DATE - INTERVAL '1 day'
-                ORDER BY a.fecha_carga DESC
-            """))
-            
-            archivos = []
-            for row in result:
-                if row is not None:
-                    archivos.append(dict(row._mapping))
-        
-        if archivos:
-            st.markdown("#### 📊 Archivos Recientes:")
-            
-            for archivo in archivos:
-                with st.expander(f"📄 {archivo['nombre_archivo']} - {archivo['estado_procesamiento']}"):
-                    # ... código existente de métricas ...
-                    
-                    # BOTONES CORREGIDOS
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        if st.button(f"📊 Ver Resultados", key=f"ver_{archivo['id_archivo']}"):
-                            mostrar_resultados_archivo(archivo['id_archivo'])
-                    
-                    with col2:
-                        if st.button(f"📥 Descargar", key=f"desc_{archivo['id_archivo']}"):
-                            descargar_resultados_archivo(archivo['id_archivo'])
-                    
-                    with col3:
-                        if archivo['estado_procesamiento'] == 'COMPLETADO':
-                            # USAR LA NUEVA FUNCIÓN ULTRA SIMPLE
-                            eliminar_archivo_ultra_simple(archivo['id_archivo'])
-        
-        else:
-            st.info("📋 No hay archivos procesados recientemente")
-            
-    except Exception as e:
-        st.error(f"Error consultando procesamiento: {str(e)}")
-
 
 
 # ========================================
@@ -5372,129 +4211,9 @@ def mostrar_interfaz_carga_limitada():
         mostrar_interfaz_carga()
 
 
-# ========================================
-# ALTERNATIVA: CONTROL MÁS GRANULAR
-# ========================================
-
-def main_aplicacion_original_granular():
-    """Versión con control más granular de funciones"""
-    
-    # ... código de estilos igual ...
-    
-    # Header principal (igual)
-    col_logo, col_title = st.columns([1, 8])
-    with col_logo:
-        try:
-            st.image("logo_RN.png", width=120)
-        except:
-            st.markdown("🏠")
-    with col_title:
-        st.markdown("""
-        <div  style="text-align: left;">
-            <h3>Red Nacional Última Milla</h3>
-            <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Obtener información del usuario
-    usuario_actual = st.session_state.get('usuario_actual', {})
-    rol_usuario = usuario_actual.get('rol', 'USUARIO')
-    nombre_usuario = usuario_actual.get('nombre_completo', 'Usuario')
-    
-    # Mostrar pestañas según permisos
-    if rol_usuario == 'SUPERUSUARIO':
-        # SUPERUSUARIO: Acceso total
-        tabs = st.tabs([
-            "📊 Dashboard", 
-            "📁 Carga de Archivos", 
-            "📋 Resultados", 
-            "⚙️ Configuración",
-            "👥 Usuarios"  # Pestaña extra para superusuarios
-        ])
-        
-        with tabs[0]:
-            mostrar_dashboard_principal()
-        with tabs[1]:
-            mostrar_interfaz_carga()
-        with tabs[2]:
-            mostrar_seccion_resultados()
-        with tabs[3]:
-            mostrar_configuracion_sistema()
-        with tabs[4]:
-            mostrar_gestion_usuarios()
-    
-    elif rol_usuario == 'GERENTE':
-        # GERENTE: Acceso casi total
-        tabs = st.tabs([
-            "📊 Dashboard", 
-            "📁 Carga de Archivos", 
-            "📋 Resultados", 
-            "⚙️ Configuración"
-        ])
-        
-        with tabs[0]:
-            mostrar_dashboard_principal()
-        with tabs[1]:
-            mostrar_interfaz_carga()
-        with tabs[2]:
-            mostrar_seccion_resultados()
-        with tabs[3]:
-            mostrar_configuracion_sistema_limitada()  # Configuración limitada
-    
-    else:
-        # USUARIO: Solo lectura
-        tabs = st.tabs([
-            "📊 Dashboard", 
-            "📋 Consultas"
-        ])
-        
-        with tabs[0]:
-            mostrar_dashboard_principal()
-        with tabs[1]:
-            mostrar_seccion_resultados()
-        
-        # Mensaje informativo para usuarios
-        st.sidebar.info(f"""
-        👤 **{nombre_usuario}**
-        🔒 **Rol:** {rol_usuario}
-        
-        **Permisos actuales:**
-        - ✅ Ver dashboard
-        - ✅ Consultar resultados
-        - ❌ Cargar archivos
-        - ❌ Configuración
-        
-        📞 **Necesitas más permisos?**
-        Contacta al administrador
-        """)
 
 
-# ========================================
-# FUNCIÓN AUXILIAR: CONFIGURACIÓN LIMITADA
-# ========================================
 
-def mostrar_configuracion_sistema_limitada():
-    """Configuración limitada para gerentes"""
-    
-    st.markdown("## ⚙️ Configuración del Sistema")
-    
-    st.info("""
-    👨‍💼 **Acceso de Gerente:**
-    Solo puedes ver estadísticas y referencias.
-    Las configuraciones avanzadas requieren permisos de SUPERUSUARIO.
-    """)
-    
-    # Solo mostrar pestañas de lectura
-    tab1, tab2 = st.tabs([
-        "📚 Referencias", 
-        "📊 Estadísticas"
-    ])
-    
-    with tab1:
-        mostrar_gestion_referencias()
-    
-    with tab2:
-        mostrar_estadisticas_sistema()
 
 
 def mostrar_parametros_sistema_admin():
@@ -5733,15 +4452,159 @@ def guardar_configuracion_sistema(batch_size, timeout, workers, cache_ttl):
         return False
 
 
-# ========================================
-# FUNCIÓN AUXILIAR: VERIFICAR SI ES SUPERUSUARIO
-# ========================================
 
-def es_solo_superusuario():
-    """Verificar si el usuario actual es SOLO superusuario (no gerente)"""
-    if 'usuario_actual' in st.session_state:
-        return st.session_state.usuario_actual.get('rol') == 'SUPERUSUARIO'
-    return False
+
+
+
+def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref, nombre_archivo):
+    """
+    Función de carga que fuerza la actualización de la interfaz
+    AGREGAR ESTA NUEVA FUNCIÓN
+    """
+    
+    try:
+        import psycopg2
+        
+        # Validar datos básicos
+        if 'nombre_oficial' not in df_ref.columns or 'codigo_oficial' not in df_ref.columns:
+            st.error("❌ Faltan columnas requeridas")
+            return False
+        
+        registros_vacios = df_ref['nombre_oficial'].isna().sum() + (df_ref['nombre_oficial'] == '').sum()
+        if registros_vacios > 0:
+            st.error(f"❌ Hay {registros_vacios} registros sin nombre oficial")
+            return False
+        
+        # Conectar con psycopg2
+        st.info("🔌 Conectando a PostgreSQL...")
+        
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
+        
+        cursor = conn.cursor()
+        
+        # Contar referencias existentes
+        st.info("📊 Contando referencias existentes...")
+        cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+        total_existentes = cursor.fetchone()[0]
+        
+        if total_existentes > 0:
+            st.warning(f"⚠️ Se reemplazarán {total_existentes:,} referencias existentes de {tipo_ref}")
+        
+        # ELIMINAR referencias existentes
+        if total_existentes > 0:
+            st.info(f"🗑️ Eliminando {total_existentes:,} referencias existentes...")
+            cursor.execute("DELETE FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+            eliminados = cursor.rowcount
+            st.info(f"✅ Eliminados: {eliminados:,}")
+            
+            # Verificar eliminación
+            cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+            verificacion = cursor.fetchone()[0]
+            
+            if verificacion > 0:
+                st.error(f"❌ DELETE falló - quedan {verificacion:,} registros")
+                conn.close()
+                return False
+        
+        # INSERTAR nuevas referencias
+        st.info(f"📥 Insertando {len(df_ref):,} nuevas referencias...")
+        
+        # Crear barra de progreso
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        insertados = 0
+        timestamp_carga = datetime.now()
+        
+        for idx, row in df_ref.iterrows():
+            try:
+                cursor.execute("""
+                    INSERT INTO referencias_normalizacion 
+                    (tipo_catalogo, codigo_oficial, nombre_oficial, nombre_alternativo, 
+                     coordenadas_lat, coordenadas_lng, estado_padre, municipio_padre, 
+                     activo, fecha_actualizacion)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    tipo_ref,
+                    str(row.get('codigo_oficial', f'AUTO_{idx}')),
+                    str(row.get('nombre_oficial', '')).strip(),
+                    json.dumps(row.get('nombres_alternativos', [])) if 'nombres_alternativos' in row else None,
+                    float(row['coordenadas_lat']) if 'coordenadas_lat' in row and pd.notna(row['coordenadas_lat']) else None,
+                    float(row['coordenadas_lng']) if 'coordenadas_lng' in row and pd.notna(row['coordenadas_lng']) else None,
+                    str(row.get('estado_padre', '')) if 'estado_padre' in row and pd.notna(row.get('estado_padre')) else None,
+                    str(row.get('municipio_padre', '')) if 'municipio_padre' in row and pd.notna(row.get('municipio_padre')) else None,
+                    True,
+                    timestamp_carga
+                ))
+                
+                insertados += 1
+                
+                # Actualizar progreso cada 50 registros
+                if insertados % 50 == 0:
+                    progress = insertados / len(df_ref)
+                    progress_bar.progress(progress)
+                    status_text.text(f"📥 Insertados: {insertados:,} / {len(df_ref):,} ({progress:.1%})")
+                
+            except Exception as e:
+                st.warning(f"⚠️ Error en registro {idx}: {str(e)}")
+        
+        # Finalizar progreso
+        progress_bar.progress(1.0)
+        status_text.text(f"✅ Insertados: {insertados:,} registros")
+        
+        # COMMIT CRÍTICO
+        st.info("💾 Guardando cambios...")
+        conn.commit()
+        
+        # VERIFICACIÓN FINAL
+        st.info("🔍 Verificando resultado...")
+        cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+        total_final = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion")
+        total_global = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        # MOSTRAR RESULTADO FINAL
+        if total_final == insertados:
+            st.success(f"""
+            ## 🎉 CARGA EXITOSA
+            
+            **✅ Resultado:**
+            - **Eliminadas:** {total_existentes:,} referencias anteriores
+            - **Insertadas:** {insertados:,} nuevas referencias  
+            - **Total {tipo_ref}:** {total_final:,} referencias
+            - **Total sistema:** {total_global:,} referencias
+            
+            **🔄 La tabla se actualizará automáticamente...**
+            """)
+            
+            # MARCAR EN SESSION STATE QUE HUBO CAMBIOS
+            if 'referencias_actualizadas' not in st.session_state:
+                st.session_state.referencias_actualizadas = 0
+            st.session_state.referencias_actualizadas += 1
+            
+            return True
+        else:
+            st.error(f"❌ Discrepancia: insertados {insertados:,}, final {total_final:,}")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Error en carga: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        return False
+
+
+
+
 
 # ========================================
 # 10. EJECUCIÓN PRINCIPAL
@@ -5750,8 +4613,4 @@ def es_solo_superusuario():
 if __name__ == "__main__":
     #main()
     main_con_autenticacion()
-    #probar_diccionarios_inteligentes()
-    #verificar_paso1()
-    #mostrar_instrucciones_paso2()
-    #print("\n" + "="*50)
-  #  verificar_paso2_implementacion()
+ 
