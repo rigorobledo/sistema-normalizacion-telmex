@@ -1827,42 +1827,132 @@ def mostrar_interfaz_carga():
 # ========================================
 
 def mostrar_carga_archivos_datos():
-    """Interfaz para cargar archivos de datos AS400 - CORREGIDA"""
+    """Interfaz para cargar archivos de datos AS400 - CON VALIDACIÓN DOBLE"""
     
     st.markdown("### 📊 Cargar Archivos de Datos AS400")
     
-    # Selector de tipo de catálogo
+    # Selector de tipo de catálogo y división
     col1, col2 = st.columns(2)
     
     with col1:
+        # COMBO TIPO DE CATÁLOGO CON OPCIÓN INICIAL
+        opciones_tipo = ["-- Seleccionar Tipo --"] + list(ESQUEMAS_AS400.keys())
+        
+        # CONTROL DE RESET: Si hay flag de reset, forzar index 0
+        if st.session_state.get('tipo_catalogo_reset', False):
+            tipo_catalogo_index = 0
+            # Limpiar el flag
+            del st.session_state.tipo_catalogo_reset
+        else:
+            # Usar valor guardado o 0 por defecto
+            if 'tipo_catalogo_selector' in st.session_state:
+                try:
+                    saved_value = st.session_state.tipo_catalogo_selector
+                    tipo_catalogo_index = opciones_tipo.index(saved_value) if saved_value in opciones_tipo else 0
+                except:
+                    tipo_catalogo_index = 0
+            else:
+                tipo_catalogo_index = 0
+        
         tipo_catalogo = st.selectbox(
             "Tipo de Catálogo:",
-            list(ESQUEMAS_AS400.keys()),
+            opciones_tipo,
+            index=tipo_catalogo_index,
+            key="tipo_catalogo_selector",
             help="Selecciona el tipo de datos que vas a subir"
         )
     
     with col2:
+        # COMBO DIVISIÓN CON OPCIÓN INICIAL
+        opciones_division = ["-- Seleccionar División --", "DES", "QAS", "MEX", "GDL", "MTY", "NTE", "TIJ"]
+        
+        # CONTROL DE RESET: Si hay flag de reset, forzar index 0
+        if st.session_state.get('division_reset', False):
+            division_index = 0
+            # Limpiar el flag
+            del st.session_state.division_reset
+        else:
+            # Usar valor guardado o 0 por defecto
+            if 'division_selector' in st.session_state:
+                try:
+                    saved_value = st.session_state.division_selector
+                    division_index = opciones_division.index(saved_value) if saved_value in opciones_division else 0
+                except:
+                    division_index = 0
+            else:
+                division_index = 0
+        
         division = st.selectbox(
             "División:",
-            ["DES", "QAS", "MEX", "GDL", "MTY", "NTE", "TIJ"],
+            opciones_division,
+            index=division_index,
+            key="division_selector",
             help="División a la que pertenecen los datos"
         )
     
-    # Mostrar estructura esperada MEJORADA
-    if tipo_catalogo:
+    # VALIDAR SI SE SELECCIONARON AMBOS VALORES
+    tipo_valido = tipo_catalogo != "-- Seleccionar Tipo --"
+    division_valida = division != "-- Seleccionar División --"
+    
+    # MOSTRAR ESTRUCTURA ESPERADA SOLO SI TIPO ES VÁLIDO
+    if tipo_valido:
         mostrar_estructura_esperada_mejorada(tipo_catalogo)
     
-    # Carga de archivos
+    # CONTROL DE FILE UPLOADER BASADO EN AMBAS SELECCIONES
     st.markdown("#### 📤 Subir Archivos:")
     
-    archivos_subidos = st.file_uploader(
-        "Selecciona archivos CSV:",
-        type=['csv'],
-        accept_multiple_files=True,
-        help="Puedes subir múltiples archivos del mismo tipo"
-    )
+    archivos_subidos = None
     
-    if archivos_subidos:
+    if tipo_valido and division_valida:
+        # AMBOS SELECCIONADOS: Habilitar file uploader
+        archivos_subidos = st.file_uploader(
+            "📁 Selecciona archivos CSV:",
+            type=['csv'],
+            accept_multiple_files=True,
+            key="archivos_datos_uploader",
+            help="Puedes subir múltiples archivos del mismo tipo"
+        )
+    elif tipo_valido and not division_valida:
+        # Solo tipo seleccionado: Pedir división
+        st.info("👆 **Ahora selecciona la división** para habilitar la carga de archivos")
+        
+        # Mostrar placeholder deshabilitado
+        st.markdown("""
+        <div style="
+            padding: 1rem; 
+            border: 2px dashed #cccccc; 
+            border-radius: 8px; 
+            text-align: center; 
+            color: #999999;
+            background-color: #f8f9fa;
+            margin: 1rem 0;
+        ">
+            📁 <strong>Seleccionar archivos CSV</strong><br>
+            <small>Selecciona una división para continuar</small>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Ninguno o solo división seleccionada: Pedir tipo primero
+        st.info("👆 **Primero selecciona el tipo de catálogo** para habilitar la carga de archivos")
+        
+        # Mostrar placeholder deshabilitado
+        st.markdown("""
+        <div style="
+            padding: 1rem; 
+            border: 2px dashed #cccccc; 
+            border-radius: 8px; 
+            text-align: center; 
+            color: #999999;
+            background-color: #f8f9fa;
+            margin: 1rem 0;
+        ">
+            📁 <strong>Seleccionar archivos CSV</strong><br>
+            <small>Selecciona un tipo de catálogo para continuar</small>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # PROCESAMIENTO DE ARCHIVOS (solo si ambos están seleccionados)
+    if archivos_subidos and tipo_valido and division_valida:
         st.markdown(f"#### 📋 Archivos Seleccionados ({len(archivos_subidos)}):")
         
         archivos_validos = []
@@ -1914,16 +2004,80 @@ def mostrar_carga_archivos_datos():
         if archivos_validos:
             st.markdown("---")
             if st.button(f"🚀 Procesar {len(archivos_validos)} archivo(s)", type="primary"):
-                procesar_archivos_cargados(archivos_validos, tipo_catalogo, division)
+                # Procesar archivos
+                success = procesar_archivos_cargados(archivos_validos, tipo_catalogo, division)
+                
+                if success:
+                    # RESET COMPLETO DESPUÉS DEL PROCESAMIENTO
+                    # Limpiar selecciones
+                    if 'tipo_catalogo_selector' in st.session_state:
+                        del st.session_state.tipo_catalogo_selector
+                    if 'division_selector' in st.session_state:
+                        del st.session_state.division_selector
+                    if 'archivos_datos_uploader' in st.session_state:
+                        del st.session_state.archivos_datos_uploader
+                    
+                    # Activar flags de reset
+                    st.session_state.tipo_catalogo_reset = True
+                    st.session_state.division_reset = True
+                    
+                    # Mostrar mensaje de éxito y recargar
+                    st.success("✅ **Archivos procesados exitosamente!** Regresando al estado inicial...")
+                    time.sleep(2)
+                    st.rerun()
         else:
             st.warning("⚠️ No hay archivos válidos para procesar. Revisa los errores mostrados arriba.")
-
+    
+    elif not (tipo_valido and division_valida):
+        # MOSTRAR INSTRUCCIONES CUANDO NO ESTÁN AMBOS SELECCIONADOS
+        st.markdown("""
+        ### 💡 Instrucciones de Uso:
+        
+        **📋 Pasos para cargar archivos AS400:**
+        
+        1. **🔽 Selecciona el tipo de catálogo** (Estados, Ciudades, Municipios, etc.)
+        2. **🏢 Elige la división** correspondiente (DES, QAS, MEX, etc.)
+        3. **📁 Selecciona tus archivos CSV** (se habilitará automáticamente)
+        4. **👀 Revisa la estructura y preview** de cada archivo
+        5. **🚀 Procesa los archivos** válidos
+        6. **✨ El sistema se resetea** automáticamente al completar
+        
+        ---
+        
+        **📋 Formatos Soportados:**
+        
+        | Tipo | Columnas Requeridas | Ejemplo |
+        |------|---------------------|---------|
+        | **ESTADOS** | STASTS, STASAB, STADES | Status, Clave, Descripción |
+        | **CIUDADES** | CTYSTS, CTYCAB, CTYDES | Status, Clave, Descripción |
+        | **MUNICIPIOS** | MPISTS, MPICVE, MPIDES | Status, Clave, Descripción |
+        | **ALCALDIAS** | DLGSTS, DLGCVE, DLGDES | Status, Clave, Descripción |
+        | **COLONIAS** | SDASTS, SDASDA, SDADES | Status, Clave, Descripción |
+        
+        ---
+        
+        **⚠️ Notas importantes:**
+        - Los archivos deben estar en formato CSV UTF-8
+        - La primera fila debe contener los nombres de las columnas
+        - Verifica que los datos coincidan con la estructura AS400
+        """)
+    
+    else:
+        # Archivo no seleccionado pero ambos combos sí
+        st.markdown(f"""
+        ### 📁 Listo para cargar archivos
+        
+        **Tipo seleccionado:** `{tipo_catalogo}`  
+        **División:** `{division}`
+        
+        👆 **Selecciona tus archivos CSV** para continuar
+        """)
             
 
 def mostrar_carga_referencias():
     """
-    Versión más simple que solo oculta el botón después de cualquier carga exitosa
-    ALTERNATIVA si la versión de arriba es muy compleja
+    Gestión de Referencias con RESET AUTOMÁTICO y VALIDACIÓN de selección
+    VERSIÓN CORREGIDA - REEMPLAZAR la función existente por esta
     """
     
     st.markdown("### 📚 Gestión de Referencias (SEPOMEX/INEGI)")
@@ -1933,33 +2087,137 @@ def mostrar_carga_referencias():
     
     st.markdown("---")
     
-    # Cargar nueva referencia
+    # Si hay una carga exitosa reciente, mostrar mensaje y resetear
+    if st.session_state.get('mostrar_mensaje_exito', False):
+        st.success("✅ **Referencias cargadas exitosamente!** La interfaz se ha reseteado.")
+        
+        # Limpiar el flag después de mostrar el mensaje
+        st.session_state.mostrar_mensaje_exito = False
+        
+        # Auto-scroll hacia arriba y refrescar
+        time.sleep(1)
+        st.rerun()
+    
+    # Interfaz de carga
     st.markdown("#### 📤 Cargar Nueva Referencia:")
     
     col1, col2 = st.columns(2)
     
     with col1:
+        # COMBO CON OPCIÓN INICIAL REQUERIDA
+        opciones_tipo = ["-- Seleccionar Tipo --"] + list(ESQUEMAS_AS400.keys())
+        
+        # CONTROL DE RESET: Si hay flag de reset, forzar index 0
+        if st.session_state.get('tipo_ref_reset', False):
+            tipo_ref_index = 0
+            # Limpiar el flag
+            del st.session_state.tipo_ref_reset
+        else:
+            # Usar valor guardado o 0 por defecto
+            if 'tipo_ref' in st.session_state:
+                try:
+                    saved_value = st.session_state.tipo_ref
+                    tipo_ref_index = opciones_tipo.index(saved_value) if saved_value in opciones_tipo else 0
+                except:
+                    tipo_ref_index = 0
+            else:
+                tipo_ref_index = 0
+        
         tipo_ref = st.selectbox(
             "Tipo de Referencia:",
-            list(ESQUEMAS_AS400.keys()),
-            key="tipo_ref"
+            opciones_tipo,
+            index=tipo_ref_index,  # Usar índice calculado
+            key="tipo_ref",
+            help="Selecciona el tipo de catálogo antes de cargar archivo"
         )
     
     with col2:
+        # COMBO FUENTE CON OPCIÓN INICIAL REQUERIDA
+        opciones_fuente = ["-- Seleccionar Fuente --", "SEPOMEX", "INEGI", "OTRO"]
+        
+        # CONTROL DE RESET: Si hay flag de reset, forzar index 0
+        if st.session_state.get('fuente_ref_reset', False):
+            fuente_ref_index = 0
+            # Limpiar el flag
+            del st.session_state.fuente_ref_reset
+        else:
+            # Usar valor guardado o 0 por defecto
+            if 'fuente_ref' in st.session_state:
+                try:
+                    saved_value = st.session_state.fuente_ref
+                    fuente_ref_index = opciones_fuente.index(saved_value) if saved_value in opciones_fuente else 0
+                except:
+                    fuente_ref_index = 0
+            else:
+                fuente_ref_index = 0
+        
         fuente_ref = st.selectbox(
             "Fuente:",
-            ["SEPOMEX", "INEGI", "OTRO"],
+            opciones_fuente,
+            index=fuente_ref_index,  # Usar índice calculado
             key="fuente_ref"
         )
     
-    archivo_referencia = st.file_uploader(
-        "Archivo de Referencia (CSV):",
-        type=['csv'],
-        key="archivo_ref",
-        help="Estructura esperada: codigo_oficial, nombre_oficial, coordenadas_lat, coordenadas_lng"
-    )
+    # VALIDAR SI SE SELECCIONÓ UN TIPO VÁLIDO
+    tipo_valido = tipo_ref != "-- Seleccionar Tipo --"
+    fuente_valida = fuente_ref != "-- Seleccionar Fuente --"
     
-    if archivo_referencia:
+    # Key único basado en timestamp para forzar reset
+    if 'file_uploader_key' not in st.session_state:
+        st.session_state.file_uploader_key = int(time.time())
+    
+    # MOSTRAR FILE UPLOADER SOLO SI AMBOS ESTÁN SELECCIONADOS
+    archivo_referencia = None
+    
+    if tipo_valido and fuente_valida:
+        # AMBOS SELECCIONADOS: Mostrar file uploader habilitado
+        archivo_referencia = st.file_uploader(
+            "📁 Examinar Archivo (CSV):",
+            type=['csv'],
+            key=f"archivo_ref_{st.session_state.file_uploader_key}",
+            help="Estructura esperada: codigo_oficial, nombre_oficial, coordenadas_lat, coordenadas_lng"
+        )
+    elif tipo_valido and not fuente_valida:
+        # Solo tipo seleccionado: Pedir que seleccione fuente
+        st.info("👆 **Ahora selecciona la fuente** de los datos para continuar")
+        
+        # Mostrar placeholder deshabilitado
+        st.markdown("""
+        <div style="
+            padding: 1rem; 
+            border: 2px dashed #cccccc; 
+            border-radius: 8px; 
+            text-align: center; 
+            color: #999999;
+            background-color: #f8f9fa;
+            margin: 1rem 0;
+        ">
+            📁 <strong>Examinar Archivo</strong><br>
+            <small>Selecciona una fuente para continuar</small>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Ninguno o solo fuente seleccionada: Pedir tipo primero
+        st.info("👆 **Primero selecciona el tipo de referencia** para habilitar la carga de archivos")
+        
+        # Mostrar un placeholder deshabilitado para mejor UX
+        st.markdown("""
+        <div style="
+            padding: 1rem; 
+            border: 2px dashed #cccccc; 
+            border-radius: 8px; 
+            text-align: center; 
+            color: #999999;
+            background-color: #f8f9fa;
+            margin: 1rem 0;
+        ">
+            📁 <strong>Examinar Archivo</strong><br>
+            <small>Selecciona un tipo de referencia para continuar</small>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # LÓGICA DE PROCESAMIENTO (solo si hay archivo Y ambos están seleccionados)
+    if archivo_referencia and tipo_valido and fuente_valida:
         try:
             df_ref = pd.read_csv(archivo_referencia)
             
@@ -1972,6 +2230,7 @@ def mostrar_carga_referencias():
             - Registros: {len(df_ref):,}
             - Columnas: {list(df_ref.columns)}
             - Tipo seleccionado: {tipo_ref}
+            - Fuente: {fuente_ref}
             """)
             
             # Validaciones básicas
@@ -1979,48 +2238,87 @@ def mostrar_carga_referencias():
             columnas_faltantes = set(columnas_requeridas) - set(df_ref.columns)
             
             if columnas_faltantes:
-                st.error(f"Faltan columnas requeridas: {', '.join(columnas_faltantes)}")
+                st.error(f"❌ Faltan columnas requeridas: {', '.join(columnas_faltantes)}")
             else:
-                # ===== CONTROL SIMPLE DE BOTÓN =====
-                
-                # Verificar si ya hubo una carga exitosa en esta sesión
-                if not st.session_state.get('carga_exitosa_reciente', False):
+                if st.button("🚀 CARGAR REFERENCIAS", type="primary", use_container_width=True):
                     
-                    # MOSTRAR BOTÓN
-                    if st.button("🚀 CARGAR CON ACTUALIZACIÓN AUTOMÁTICA", type="primary"):
-                        
-                        st.write("🔄 INICIANDO CARGA...")
-                        
-                        # Ejecutar la carga
-                        success = cargar_referencias_con_actualizacion_automatica(
-                            df_ref, tipo_ref, fuente_ref, archivo_referencia.name
-                        )
-                        
-                        if success:
-                            # MARCAR COMO EXITOSA
-                            st.session_state['carga_exitosa_reciente'] = True
-                            st.success("✅ CARGA COMPLETADA - ACTUALIZANDO VISTA...")
-                            time.sleep(1)
-                            st.rerun()
-                        else:
-                            st.error("❌ Error en la carga")
-                
-                else:
-                    # MOSTRAR MENSAJE EN LUGAR DEL BOTÓN
-                    st.success("""
-                    ✅ **CARGA COMPLETADA EXITOSAMENTE**
+                    # Ejecutar carga
+                    success = cargar_referencias_con_actualizacion_automatica(
+                        df_ref, tipo_ref, fuente_ref, archivo_referencia.name
+                    )
                     
-                    El archivo ha sido procesado y las referencias están actualizadas.
-                    """)
-                    
-                    # Botón para reiniciar (opcional)
-                    if st.button("🔄 Cargar Otro Archivo"):
-                        st.session_state['carga_exitosa_reciente'] = False
+                    if success:
+                        # ===== RESET COMPLETO CORREGIDO =====
+                        # Generar nueva key para file uploader
+                        st.session_state.file_uploader_key = int(time.time())  
+                        
+                        # Marcar mensaje de éxito
+                        st.session_state.mostrar_mensaje_exito = True  
+                        
+                        # ===== LIMPIAR TODOS LOS SELECTBOX =====
+                        # FORZAR RESET A VALORES INICIALES
+                        if 'tipo_ref' in st.session_state:
+                            del st.session_state.tipo_ref
+                        if 'fuente_ref' in st.session_state:
+                            del st.session_state.fuente_ref
+                        
+                        # FORZAR VALORES INICIALES EXPLÍCITAMENTE
+                        st.session_state.tipo_ref_reset = True  # Flag para forzar reset
+                        st.session_state.fuente_ref_reset = True  # Flag para forzar reset
+                        
+                        # Rerun inmediato para aplicar reset
                         st.rerun()
+                    else:
+                        st.error("❌ Error en la carga")
         
         except Exception as e:
-            st.error(f"Error leyendo archivo de referencia: {str(e)}")
-
+            st.error(f"❌ Error leyendo archivo de referencia: {str(e)}")
+    
+    elif not (tipo_valido and fuente_valida):
+        # ESTADO INICIAL: Ambos no seleccionados - mostrar ayuda
+        st.markdown("""
+        ### 💡 Instrucciones de Uso:
+        
+        **📋 Pasos para cargar referencias:**
+        
+        1. **🔽 Selecciona el tipo** de referencia del menú desplegable
+        2. **🏷️ Elige la fuente** de los datos (SEPOMEX, INEGI, etc.)
+        3. **📁 Examina y selecciona** tu archivo CSV (se habilitará automáticamente)
+        4. **👀 Revisa la vista previa** de los datos cargados
+        5. **🚀 Haz clic en "CARGAR"** para procesar las referencias
+        6. **✨ La interfaz se resetea** automáticamente al completar
+        
+        ---
+        
+        **📋 Estructura requerida del archivo CSV:**
+        
+        | Columna | Descripción | Obligatorio |
+        |---------|-------------|-------------|
+        | `codigo_oficial` | Código único del elemento | ✅ Sí |
+        | `nombre_oficial` | Nombre normalizado | ✅ Sí |
+        | `coordenadas_lat` | Latitud (decimal) | ⚪ Opcional |
+        | `coordenadas_lng` | Longitud (decimal) | ⚪ Opcional |
+        | `estado_padre` | Estado de referencia | ⚪ Opcional |
+        | `municipio_padre` | Municipio de referencia | ⚪ Opcional |
+        
+        ---
+        
+        **⚠️ Notas importantes:**
+        - El archivo debe estar en formato CSV UTF-8
+        - La primera fila debe contener los nombres de las columnas
+        - Los datos nuevos **reemplazarán** las referencias existentes del mismo tipo
+        """)
+    
+    else:
+        # Archivo no cargado pero ambos sí seleccionados
+        st.markdown(f"""
+        ### 📁 Listo para cargar archivo
+        
+        **Tipo seleccionado:** `{tipo_ref}`  
+        **Fuente:** `{fuente_ref}`
+        
+        👆 **Arrastra tu archivo CSV aquí** o haz clic en "Examinar Archivo"
+        """)
     
 
 def mostrar_referencias_actuales():
@@ -2275,7 +2573,7 @@ Posibles causas:
 # ========================================
 
 def procesar_archivos_cargados(archivos_validos, tipo_catalogo, division):
-    """Procesar archivos cargados en tiempo real"""
+    """Procesar archivos cargados en tiempo real - CON RETURN DE ÉXITO"""
     
     sistema = SistemaNormalizacion()
     
@@ -2284,6 +2582,7 @@ def procesar_archivos_cargados(archivos_validos, tipo_catalogo, division):
     status_text = st.empty()
     
     total_archivos = len(archivos_validos)
+    archivos_exitosos = 0
     
     for idx, (archivo, df) in enumerate(archivos_validos):
         status_text.text(f"Procesando {archivo.name}... ({idx + 1}/{total_archivos})")
@@ -2295,14 +2594,24 @@ def procesar_archivos_cargados(archivos_validos, tipo_catalogo, division):
         
         if exito:
             st.success(f"✅ {archivo.name}: {mensaje}")
+            archivos_exitosos += 1
         else:
             st.error(f"❌ {archivo.name}: {mensaje}")
         
         # Actualizar progreso general
         progress_bar.progress((idx + 1) / total_archivos)
     
-    status_text.text("✅ Procesamiento completado")
-    st.balloons()
+    # Resultado final
+    if archivos_exitosos == total_archivos:
+        status_text.text("✅ Procesamiento completado exitosamente")
+        st.balloons()
+        return True
+    elif archivos_exitosos > 0:
+        status_text.text(f"⚠️ Procesamiento parcial: {archivos_exitosos}/{total_archivos} exitosos")
+        return True
+    else:
+        status_text.text("❌ Procesamiento falló")
+        return False
 
 
 
