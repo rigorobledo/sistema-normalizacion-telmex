@@ -1020,50 +1020,40 @@ class SistemaNormalizacion:
         self.inicializar_patrones_limpieza()
         
     def crear_conexion(self):
-        """Crear conexión que funciona en local y Railway"""
+        """Crear conexión con mensajes temporales"""
         try:
             connection_url = f"postgresql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}/{DATABASE_CONFIG['database']}"
             
             if IS_RAILWAY:
-                # Configuración optimizada para Railway
-                engine = create_engine(
-                    connection_url,
-                    pool_size=3,
-                    max_overflow=5,
-                    pool_timeout=20,
-                    pool_recycle=1800,
-                    connect_args={
-                        'sslmode': 'require',
-                        'connect_timeout': 10,
-                        'application_name': 'TelmexNormalizacion-Railway'
-                    }
-                )
+                engine = create_engine(connection_url, pool_size=3, max_overflow=5, pool_timeout=20, pool_recycle=1800, connect_args={'sslmode': 'require', 'connect_timeout': 10, 'application_name': 'TelmexNormalizacion-Railway'})
             else:
-                # Configuración para desarrollo local
-                engine = create_engine(
-                    connection_url,
-                    pool_size=5,
-                    max_overflow=10,
-                    pool_timeout=30,
-                    pool_recycle=3600,
-                    connect_args={
-                        'sslmode': 'prefer',
-                        'connect_timeout': 5,
-                        'application_name': 'TelmexNormalizacion-Local'
-                    }
-                )
+                engine = create_engine(connection_url, pool_size=5, max_overflow=10, pool_timeout=30, pool_recycle=3600, connect_args={'sslmode': 'prefer', 'connect_timeout': 5, 'application_name': 'TelmexNormalizacion-Local'})
             
             # Probar conexión
             with engine.connect() as conn:
                 result = conn.execute(text("SELECT version()"))
                 version = result.fetchone()[0]
             
-            # Mensaje diferente según ambiente
-            if IS_RAILWAY:
-                st.success("✅ 🚂 Conexión Railway establecida")
-            else:
-                st.success("✅ 🏠 Conexión Local establecida")
-                st.info(f"🗄️ PostgreSQL: {version.split(',')[0]}")
+            # ===== MENSAJES TEMPORALES =====
+            if 'mensajes_mostrados' not in st.session_state:
+                st.session_state.mensajes_mostrados = False
+            
+            if not st.session_state.mensajes_mostrados:
+                # Mostrar mensajes
+                st.success("✅ 🚂 Conexión Railway establecida" if IS_RAILWAY else "✅ 🏠 Conexión Local establecida")
+                
+                if IS_LOCAL:
+                    version_corta = version.split(',')[0]
+                    st.info(f"🗄️ PostgreSQL: {version_corta}")
+                
+                st.success("✅ Sistema de tablas inicializado correctamente")
+                
+                # Marcar como mostrados
+                st.session_state.mensajes_mostrados = True
+                
+                # Auto-limpiar después de 3 segundos
+                time.sleep(5)
+                st.rerun()
             
             return engine
             
@@ -1072,13 +1062,6 @@ class SistemaNormalizacion:
                 st.error(f"❌ 🚂 Error conexión Railway: {str(e)}")
             else:
                 st.error(f"❌ 🏠 Error conexión Local: {str(e)}")
-                st.code(f"""
-    Configuración utilizada:
-    Host: {DATABASE_CONFIG['host']}
-    Puerto: {DATABASE_CONFIG['port']}
-    BD: {DATABASE_CONFIG['database']}
-    Usuario: {DATABASE_CONFIG['user']}
-                """)
             return None
     
     def crear_tablas_sistema(self):
@@ -2548,50 +2531,107 @@ def mostrar_referencias_actuales():
 # ========================================
 
 def mostrar_procesamiento_tiempo_real():
-    """Mostrar el progreso de procesamiento en tiempo real - SIN BOTÓN ELIMINAR"""
+    """Mostrar procesamiento con diagnóstico mejorado - FUNCIÓN CORREGIDA COMPLETA"""
     
     st.markdown("### ⚙️ Monitor de Procesamiento")
-
-
     
-    # Obtener archivos en procesamiento
+    # NUEVO: Botón de diagnóstico
+    # if st.button("🔍 DIAGNOSTICAR ARCHIVOS", type="secondary"):
+    #     sistema = SistemaNormalizacion()
+    #     diagnosticar_archivos_cargados(sistema)
+    #     return
+    
+    # Obtener archivos con RANGO DE FECHA CONFIGURABLE
     sistema = SistemaNormalizacion()
+    
+    # NUEVO: Selector de rango de tiempo
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        rango_tiempo = st.selectbox(
+            "📅 Mostrar archivos de los últimos:",
+            options=[
+                ("1 hora", 1/24),
+                ("6 horas", 6/24), 
+                ("24 horas", 1),
+                ("3 días", 3),
+                ("7 días", 7),
+                ("30 días", 30),
+                ("Todos los archivos", 9999)
+            ],
+            index=6,  # Por defecto "Todos los archivos"
+            format_func=lambda x: x[0]
+        )
+    
+    with col2:
+        if st.button("🔄 Actualizar", type="primary"):
+            st.rerun()
+    
+    dias_limite = rango_tiempo[1]
     
     try:
         with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division,
-                       a.total_registros, a.fecha_carga, a.estado_procesamiento,
-                       COALESCE(r.procesados, 0) as registros_procesados
-                FROM archivos_cargados a
-                LEFT JOIN (
-                    SELECT id_archivo, COUNT(*) as procesados
-                    FROM resultados_normalizacion
-                    GROUP BY id_archivo
-                ) r ON a.id_archivo = r.id_archivo
-                WHERE a.fecha_carga >= CURRENT_DATE - INTERVAL '1 day'
-                ORDER BY a.fecha_carga DESC
-            """))
             
-            # CORRECCIÓN: Manejar resultados correctamente
+            if dias_limite >= 9999:
+                # Mostrar todos los archivos
+                result = conn.execute(text("""
+                    SELECT a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division,
+                           a.total_registros, a.fecha_carga, a.estado_procesamiento,
+                           COALESCE(r.procesados, 0) as registros_procesados
+                    FROM archivos_cargados a
+                    LEFT JOIN (
+                        SELECT id_archivo, COUNT(*) as procesados
+                        FROM resultados_normalizacion
+                        GROUP BY id_archivo
+                    ) r ON a.id_archivo = r.id_archivo
+                    ORDER BY a.fecha_carga DESC
+                """))
+            else:
+                # Mostrar archivos del rango seleccionado
+                fecha_limite = datetime.now() - timedelta(days=dias_limite)
+                
+                result = conn.execute(text("""
+                    SELECT a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division,
+                           a.total_registros, a.fecha_carga, a.estado_procesamiento,
+                           COALESCE(r.procesados, 0) as registros_procesados
+                    FROM archivos_cargados a
+                    LEFT JOIN (
+                        SELECT id_archivo, COUNT(*) as procesados
+                        FROM resultados_normalizacion
+                        GROUP BY id_archivo
+                    ) r ON a.id_archivo = r.id_archivo
+                    WHERE a.fecha_carga >= :fecha_limite
+                    ORDER BY a.fecha_carga DESC
+                """), {'fecha_limite': fecha_limite})
+            
             archivos = []
             for row in result:
                 if row is not None:
-                    archivos.append(dict(row._mapping))
+                    archivos.append({
+                        'id_archivo': row[0],
+                        'nombre_archivo': row[1],
+                        'tipo_catalogo': row[2],
+                        'division': row[3],
+                        'total_registros': row[4] or 0,
+                        'fecha_carga': row[5],
+                        'estado_procesamiento': row[6],
+                        'registros_procesados': row[7] or 0
+                    })
         
         if archivos:
-            st.markdown("#### 📊 Archivos Recientes:")
+            st.success(f"✅ Se encontraron {len(archivos)} archivos ({rango_tiempo[0]})")
             
+            # Mostrar archivos
             for archivo in archivos:
-                with st.expander(f"📄 {archivo['nombre_archivo']} - {archivo['estado_procesamiento']}"):
+                with st.expander(f"📄 {archivo['nombre_archivo']} - {archivo['estado_procesamiento']}", expanded=True):
                     col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
-                        total_reg = int(archivo['total_registros'] or 0)
+                        total_reg = int(archivo['total_registros'])
                         st.metric("Total Registros", f"{total_reg:,}")
                     
                     with col2:
-                        procesados = int(archivo['registros_procesados'] or 0)
+                        procesados = int(archivo['registros_procesados'])
                         st.metric("Procesados", f"{procesados:,}")
                     
                     with col3:
@@ -2607,7 +2647,7 @@ def mostrar_procesamiento_tiempo_real():
                     # Barra de progreso
                     if total_reg > 0:
                         progreso_pct = procesados / total_reg
-                        st.progress(min(progreso_pct, 1.0))  # Asegurar que no exceda 1.0
+                        st.progress(min(progreso_pct, 1.0))
                     else:
                         st.progress(0.0)
                     
@@ -2616,9 +2656,10 @@ def mostrar_procesamiento_tiempo_real():
                     with col1:
                         st.info(f"**Tipo:** {archivo['tipo_catalogo']}")
                     with col2:
-                        st.info(f"**Cargado:** {archivo['fecha_carga']}")
+                        fecha_formateada = archivo['fecha_carga'].strftime('%Y-%m-%d %H:%M:%S')
+                        st.info(f"**Cargado:** {fecha_formateada}")
                     
-                    # BOTONES AJUSTADOS - SIN ELIMINAR (2 columnas en lugar de 3)
+                    # Botones de acción
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -2628,102 +2669,41 @@ def mostrar_procesamiento_tiempo_real():
                     with col2:
                         if st.button(f"📥 Descargar", key=f"desc_{archivo['id_archivo']}", use_container_width=True):
                             descargar_resultados_archivo(archivo['id_archivo'])
-                    
-                    # INFORMACIÓN ADICIONAL EN LUGAR DEL BOTÓN ELIMINAR
-                    if archivo['estado_procesamiento'] == 'COMPLETADO':
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            # Calcular tasa de éxito
-                            if procesados > 0:
-                                # Obtener estadísticas del archivo
-                                try:
-                                    with sistema.engine.connect() as conn_stats:
-                                        result_stats = conn_stats.execute(text("""
-                                            SELECT 
-                                                COUNT(CASE WHEN valor_normalizado IS NOT NULL THEN 1 END) as exitosos,
-                                                COALESCE(AVG(CASE WHEN confianza > 0 THEN confianza END), 0) as confianza_prom
-                                            FROM resultados_normalizacion 
-                                            WHERE id_archivo = :id_archivo
-                                        """), {'id_archivo': archivo['id_archivo']})
-                                        
-                                        stats_row = result_stats.fetchone()
-                                        if stats_row:
-                                            exitosos = int(stats_row[0] or 0)
-                                            confianza_prom = float(stats_row[1] or 0)
-                                            tasa_exito = (exitosos / procesados * 100) if procesados > 0 else 0
-                                            
-                                            st.success(f"✅ **Éxito:** {tasa_exito:.1f}% ({exitosos:,}/{procesados:,})")
-                                        else:
-                                            st.info("ℹ️ **Estado:** Completado")
-                                except:
-                                    st.info("ℹ️ **Estado:** Completado")
-                            else:
-                                st.info("ℹ️ **Estado:** Completado")
-                        
-                        with col2:
-                            # Mostrar confianza promedio si está disponible
-                            try:
-                                with sistema.engine.connect() as conn_conf:
-                                    result_conf = conn_conf.execute(text("""
-                                        SELECT COALESCE(AVG(CASE WHEN confianza > 0 THEN confianza END), 0) as confianza_prom
-                                        FROM resultados_normalizacion 
-                                        WHERE id_archivo = :id_archivo
-                                    """), {'id_archivo': archivo['id_archivo']})
-                                    
-                                    conf_row = result_conf.fetchone()
-                                    if conf_row and conf_row[0] > 0:
-                                        confianza = float(conf_row[0]) * 100
-                                        st.info(f"🎯 **Confianza:** {confianza:.1f}%")
-                                    else:
-                                        fecha_formato = pd.to_datetime(archivo['fecha_carga']).strftime('%d/%m/%Y %H:%M')
-                                        st.info(f"📅 **Procesado:** {fecha_formato}")
-                            except:
-                                fecha_formato = pd.to_datetime(archivo['fecha_carga']).strftime('%d/%m/%Y %H:%M')
-                                st.info(f"📅 **Procesado:** {fecha_formato}")
-                    
-                    else:
-                        # Para archivos en proceso
-                        st.info(f"⏳ **Estado:** {archivo['estado_procesamiento']}")
         
         else:
-            st.info("📋 No hay archivos procesados recientemente")
+            st.warning(f"⚠️ No hay archivos en el rango seleccionado ({rango_tiempo[0]})")
             
-            # Mostrar ayuda para usuarios nuevos
-            st.markdown("### 🚀 ¿Cómo empezar?")
+            # Mostrar ayuda
+            st.markdown("### 💡 ¿Qué puedes hacer?")
+            
             col1, col2 = st.columns(2)
             
             with col1:
                 st.markdown("""
-                **1. Sube archivos AS400:**
-                - Ve a la pestaña "Subir Archivos"
-                - Selecciona el tipo de catálogo
-                - Carga tu archivo CSV
+                **🔍 Diagnóstico:**
+                - Haz clic en "DIAGNOSTICAR ARCHIVOS"
+                - Cambia el rango de tiempo
+                - Verifica si el archivo se cargó correctamente
                 """)
             
             with col2:
                 st.markdown("""
-                **2. Configura referencias:**
-                - Sube archivos de referencia SEPOMEX/INEGI
-                - Mejora la precisión de normalización
-                - Ve resultados aquí en tiempo real
+                **📁 Carga de archivos:**
+                - Ve a "Carga de Archivos"
+                - Sube un archivo nuevo
+                - Verifica que se procese correctamente
                 """)
+            
+            # Botón directo para diagnóstico
+            if st.button("🔍 HACER DIAGNÓSTICO COMPLETO", type="primary"):
+                diagnosticar_archivos_cargados(sistema)
     
     except Exception as e:
         st.error(f"Error consultando procesamiento: {str(e)}")
         
-        # Mostrar información de debug en desarrollo
         if st.checkbox("🔧 Mostrar detalles técnicos"):
-            st.code(f"""
-Error: {str(e)}
-Tipo: {type(e).__name__}
-
-Posibles causas:
-1. Base de datos no inicializada
-2. Tablas no creadas
-3. Error de conexión
-4. Problema con SQLAlchemy version
-            """)
+            import traceback
+            st.code(traceback.format_exc())
 
 # ========================================
 # 6. FUNCIONES DE PROCESAMIENTO
@@ -5055,7 +5035,7 @@ def mostrar_interfaz_carga_limitada():
 
 
 def mostrar_parametros_sistema_admin():
-    """Parámetros del sistema - SOLO para SUPERUSUARIOS"""
+    """Parámetros del sistema - VERSIÓN CORREGIDA CON BOTONES FUNCIONALES"""
     
     st.markdown("#### ⚙️ Parámetros del Sistema")
     st.markdown("🔒 **Acceso de Administrador** - Configuración técnica avanzada")
@@ -5088,97 +5068,186 @@ def mostrar_parametros_sistema_admin():
         - **Menor TTL** = Más consultas, datos más actualizados
         """)
     
+    # Inicializar valores por defecto si no existen
+    if 'config_batch_size' not in st.session_state:
+        st.session_state.config_batch_size = 1000
+    if 'config_timeout' not in st.session_state:
+        st.session_state.config_timeout = 30
+    if 'config_workers' not in st.session_state:
+        st.session_state.config_workers = 4
+    if 'config_cache_ttl' not in st.session_state:
+        st.session_state.config_cache_ttl = 300
+    
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("**⚡ Rendimiento:**")
         batch_size = st.number_input(
             "🔢 Tamaño de lote para procesamiento:", 
-            value=1000, 
+            value=st.session_state.config_batch_size, 
             min_value=100, 
             max_value=10000,
             step=100,
-            help="Registros procesados por lote. Más alto = más memoria pero más rápido."
+            help="Registros procesados por lote. Más alto = más memoria pero más rápido.",
+            key="batch_size_input"
         )
         
         timeout_seconds = st.number_input(
             "⏱️ Timeout de consultas (segundos):", 
-            value=30, 
+            value=st.session_state.config_timeout, 
             min_value=5, 
             max_value=300,
             step=5,
-            help="Tiempo máximo para una consulta SQL antes de cancelarla."
+            help="Tiempo máximo para una consulta SQL antes de cancelarla.",
+            key="timeout_input"
         )
     
     with col2:
         st.markdown("**🔧 Concurrencia:**")
         max_workers = st.number_input(
             "🧵 Número máximo de hilos:", 
-            value=4, 
+            value=st.session_state.config_workers, 
             min_value=1, 
             max_value=16,
             step=1,
-            help="Procesos paralelos. Más hilos = más velocidad pero más CPU."
+            help="Procesos paralelos. Más hilos = más velocidad pero más CPU.",
+            key="workers_input"
         )
         
         cache_ttl = st.number_input(
             "💾 TTL de cache (segundos):", 
-            value=300, 
+            value=st.session_state.config_cache_ttl, 
             min_value=60, 
             max_value=3600,
             step=30,
-            help="Tiempo que los resultados se mantienen en memoria."
+            help="Tiempo que los resultados se mantienen en memoria.",
+            key="cache_input"
         )
     
-    # Recomendaciones automáticas
+    # Recomendaciones automáticas - CORREGIDAS
     st.markdown("#### 💡 Recomendaciones Automáticas:")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
         if st.button("📱 Configurar para archivos pequeños", help="< 1,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 500,
-                'timeout': 15,
-                'workers': 2,
-                'cache': 300
-            }
+            # APLICAR CONFIGURACIÓN PARA ARCHIVOS PEQUEÑOS
+            st.session_state.config_batch_size = 500
+            st.session_state.config_timeout = 15
+            st.session_state.config_workers = 2
+            st.session_state.config_cache_ttl = 300
+            
             st.success("✅ Configuración aplicada para archivos pequeños")
+            st.info("""
+            **Configuración aplicada:**
+            - 🔢 Lote: 500 registros
+            - ⏱️ Timeout: 15 segundos
+            - 🧵 Hilos: 2
+            - 💾 Cache: 300 segundos
+            """)
+            
+            # Forzar actualización de la interfaz
+            st.rerun()
     
     with col2:
         if st.button("📊 Configurar para archivos medianos", help="1,000 - 10,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 1000,
-                'timeout': 30,
-                'workers': 4,
-                'cache': 300
-            }
+            # APLICAR CONFIGURACIÓN PARA ARCHIVOS MEDIANOS
+            st.session_state.config_batch_size = 1000
+            st.session_state.config_timeout = 30
+            st.session_state.config_workers = 4
+            st.session_state.config_cache_ttl = 300
+            
             st.success("✅ Configuración aplicada para archivos medianos")
+            st.info("""
+            **Configuración aplicada:**
+            - 🔢 Lote: 1,000 registros
+            - ⏱️ Timeout: 30 segundos
+            - 🧵 Hilos: 4
+            - 💾 Cache: 300 segundos
+            """)
+            
+            # Forzar actualización de la interfaz
+            st.rerun()
     
     with col3:
         if st.button("📈 Configurar para archivos grandes", help="> 10,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 2000,
-                'timeout': 60,
-                'workers': 6,
-                'cache': 600
-            }
+            # APLICAR CONFIGURACIÓN PARA ARCHIVOS GRANDES
+            st.session_state.config_batch_size = 2000
+            st.session_state.config_timeout = 60
+            st.session_state.config_workers = 6
+            st.session_state.config_cache_ttl = 600
+            
             st.success("✅ Configuración aplicada para archivos grandes")
+            st.info("""
+            **Configuración aplicada:**
+            - 🔢 Lote: 2,000 registros
+            - ⏱️ Timeout: 60 segundos
+            - 🧵 Hilos: 6
+            - 💾 Cache: 600 segundos
+            """)
+            
+            # Forzar actualización de la interfaz
+            st.rerun()
+    
+    # Detectar cambios en los valores
+    valores_cambiados = (
+        batch_size != st.session_state.config_batch_size or
+        timeout_seconds != st.session_state.config_timeout or
+        max_workers != st.session_state.config_workers or
+        cache_ttl != st.session_state.config_cache_ttl
+    )
+    
+    # Mostrar estado de configuración actual
+    st.markdown("---")
+    st.markdown("#### 📊 Configuración Actual:")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("🔢 Lote", f"{batch_size:,}")
+    with col2:
+        st.metric("⏱️ Timeout", f"{timeout_seconds}s")
+    with col3:
+        st.metric("🧵 Hilos", max_workers)
+    with col4:
+        st.metric("💾 Cache", f"{cache_ttl}s")
     
     # Botón para guardar configuración
-    if st.button("💾 Guardar Configuración", type="primary"):
-        # Guardar en base de datos o archivo de configuración
-        guardar_configuracion_sistema(batch_size, timeout_seconds, max_workers, cache_ttl)
-        st.success("✅ Configuración guardada correctamente")
-        
-        # Mostrar resumen de lo guardado
-        st.info(f"""
-        **Configuración guardada:**
-        - 🔢 Lote: {batch_size:,} registros
-        - ⏱️ Timeout: {timeout_seconds} segundos
-        - 🧵 Hilos: {max_workers}
-        - 💾 Cache: {cache_ttl} segundos
-        """)
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        if valores_cambiados:
+            st.warning("⚠️ Hay cambios sin guardar en la configuración")
+        else:
+            st.success("✅ Configuración sincronizada")
+    
+    with col2:
+        if st.button("💾 Guardar Configuración", type="primary", disabled=not valores_cambiados):
+            # Guardar en session_state
+            st.session_state.config_batch_size = batch_size
+            st.session_state.config_timeout = timeout_seconds
+            st.session_state.config_workers = max_workers
+            st.session_state.config_cache_ttl = cache_ttl
+            
+            # Guardar en base de datos
+            success = guardar_configuracion_sistema(batch_size, timeout_seconds, max_workers, cache_ttl)
+            
+            if success:
+                st.success("✅ Configuración guardada correctamente")
+                
+                # Mostrar resumen de lo guardado
+                st.info(f"""
+                **Configuración guardada:**
+                - 🔢 Lote: {batch_size:,} registros
+                - ⏱️ Timeout: {timeout_seconds} segundos
+                - 🧵 Hilos: {max_workers}
+                - 💾 Cache: {cache_ttl} segundos
+                """)
+                
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("❌ Error guardando configuración")
 
 
 def mostrar_mensaje_permisos_parametros(rol_usuario):
@@ -5623,6 +5692,85 @@ A,00002,DOCTORES
         if tipo_catalogo in ejemplos:
             st.markdown("**Ejemplo de datos correctos (nota los campos de Status vacíos):**")
             st.code(ejemplos[tipo_catalogo], language="csv")
+
+
+# ========================================
+# DIAGNÓSTICO Y CORRECCIÓN DE PROCESAMIENTO
+# ========================================
+
+def diagnosticar_archivos_cargados(sistema):
+    """Función de diagnóstico para ver qué está pasando"""
+    
+    st.markdown("### 🔍 Diagnóstico de Archivos")
+    
+    try:
+        with sistema.engine.connect() as conn:
+            
+            # 1. VERIFICAR TODAS LAS TABLAS
+            st.markdown("#### 1️⃣ Verificar Tablas Existentes")
+            
+            result = conn.execute(text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                ORDER BY table_name
+            """))
+            
+            tablas = [row[0] for row in result]
+            
+            if tablas:
+                st.success(f"✅ Tablas encontradas: {', '.join(tablas)}")
+            else:
+                st.error("❌ No se encontraron tablas")
+                return
+            
+            # 2. VERIFICAR ARCHIVOS_CARGADOS (SIN FILTRO DE FECHA)
+            st.markdown("#### 2️⃣ Todos los Archivos Cargados (Sin filtro de fecha)")
+            
+            result = conn.execute(text("""
+                SELECT 
+                    id_archivo,
+                    nombre_archivo,
+                    tipo_catalogo,
+                    division,
+                    total_registros,
+                    fecha_carga,
+                    estado_procesamiento,
+                    usuario
+                FROM archivos_cargados
+                ORDER BY fecha_carga DESC
+            """))
+            
+            todos_archivos = []
+            for row in result:
+                if row:
+                    todos_archivos.append({
+                        'id_archivo': row[0],
+                        'nombre_archivo': row[1],
+                        'tipo_catalogo': row[2],
+                        'division': row[3],
+                        'total_registros': row[4],
+                        'fecha_carga': row[5],
+                        'estado_procesamiento': row[6],
+                        'usuario': row[7]
+                    })
+            
+            if todos_archivos:
+                st.success(f"✅ TOTAL ARCHIVOS ENCONTRADOS: {len(todos_archivos)}")
+                
+                # Mostrar en tabla
+                df_archivos = pd.DataFrame(todos_archivos)
+                df_archivos['fecha_carga'] = pd.to_datetime(df_archivos['fecha_carga']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                st.dataframe(df_archivos, use_container_width=True, hide_index=True)
+            
+            else:
+                st.error("❌ NO HAY ARCHIVOS CARGADOS")
+                st.info("Esto significa que el archivo no se cargó correctamente en la base de datos")
+    
+    except Exception as e:
+        st.error(f"❌ Error en diagnóstico: {str(e)}")
+
 
 
 # ========================================
