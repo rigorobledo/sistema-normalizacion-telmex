@@ -24,19 +24,6 @@ import re
 from fuzzywuzzy import fuzz, process
 import unicodedata
 
-
-import os
-from dotenv import load_dotenv
-from urllib.parse import urlparse
-
-# Cargar variables de entorno
-load_dotenv()
-
-# Detectar ambiente
-IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
-IS_LOCAL = not IS_RAILWAY
-
-
 # ========================================
 # SISTEMA COMPLETO DE LOGIN Y AUTENTICACIÓN
 # AGREGAR AL INICIO DEL ARCHIVO (después de los imports)
@@ -45,6 +32,22 @@ IS_LOCAL = not IS_RAILWAY
 import hashlib
 import secrets
 from datetime import datetime, timedelta
+
+
+# AGREGAR ESTOS IMPORTS AL INICIO (después de los imports existentes)
+import os
+from dotenv import load_dotenv
+from urllib.parse import urlparse
+
+# Cargar variables de entorno (solo si existe .env)
+try:
+    load_dotenv()
+except:
+    pass
+
+# DETECCIÓN AUTOMÁTICA DE AMBIENTE
+IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
+IS_LOCAL = not IS_RAILWAY
 
 # ========================================
 # 1. TABLA DE USUARIOS - AGREGAR A crear_tablas_sistema()
@@ -756,22 +759,6 @@ def main_aplicacion_original():
 # DICCIONARIOS DE CONOCIMIENTO (AGREGAR AL INICIO DEL ARCHIVO)
 # ========================================
 
-# Configuración adaptativa de base de datos
-if IS_RAILWAY:
-    # En Railway: usar DATABASE_URL
-    DATABASE_URL = os.getenv('DATABASE_URL')
-    # Railway da la URL completa, la parseamos después
-    DATABASE_CONFIG = {'url': DATABASE_URL}
-else:
-    # Local: usar configuración original
-    DATABASE_CONFIG = {
-        'host': os.getenv('DB_HOST', 'localhost'),
-        'port': int(os.getenv('DB_PORT', 5432)),
-        'database': os.getenv('DB_NAME', 'normalizacion_domicilios'),
-        'user': os.getenv('DB_USER', 'postgres'),
-        'password': os.getenv('DB_PASSWORD', 'admin123')
-    }
-
 # Diccionario de abreviaciones comunes en México
 ABREVIACIONES_MEXICO = {
     # Estados más comunes
@@ -902,7 +889,52 @@ PATRONES_LIMPIEZA_MEXICO = [
 # 1. CONFIGURACIÓN AVANZADA
 # ========================================
 
+#RRV01 ATABASE_CONFIG = {
+#    'host': 'localhost',
+#    'port': 5432,
+#    'database': 'normalizacion_domicilios',
+#    'user': 'postgres',
+#    'password': 'admin123'
+#}
 
+#RRV01
+def get_database_config():
+    """Configuración de BD que funciona en ambos ambientes"""
+    
+    if IS_RAILWAY:
+        # CONFIGURACIÓN PARA RAILWAY
+        if 'DATABASE_URL' in os.environ:
+            database_url = os.environ['DATABASE_URL']
+            parsed = urlparse(database_url)
+            
+            return {
+                'host': parsed.hostname,
+                'port': parsed.port or 5432,
+                'database': parsed.path[1:],
+                'user': parsed.username,
+                'password': parsed.password
+            }
+        else:
+            # Variables manuales en Railway
+            return {
+                'host': os.environ['DB_HOST'],
+                'port': int(os.environ.get('DB_PORT', 5432)),
+                'database': os.environ['DB_NAME'],
+                'user': os.environ['DB_USER'],
+                'password': os.environ['DB_PASSWORD']
+            }
+    else:
+        # CONFIGURACIÓN LOCAL
+        return {
+            'host': os.getenv('LOCAL_DB_HOST', 'localhost'),
+            'port': int(os.getenv('LOCAL_DB_PORT', 5432)),
+            'database': os.getenv('LOCAL_DB_NAME', 'normalizacion_domicilios'),
+            'user': os.getenv('LOCAL_DB_USER', 'postgres'),
+            'password': os.getenv('LOCAL_DB_PASSWORD', 'admin123')
+        }
+
+# APLICAR LA CONFIGURACIÓN
+DATABASE_CONFIG = get_database_config()
 
 # Configuración de página
 st.set_page_config(
@@ -988,20 +1020,65 @@ class SistemaNormalizacion:
         self.inicializar_patrones_limpieza()
         
     def crear_conexion(self):
-        """Crear conexión a PostgreSQL"""
+        """Crear conexión que funciona en local y Railway"""
         try:
-            if IS_RAILWAY and 'url' in DATABASE_CONFIG:
-                # En Railway: usar URL directa
-                engine = create_engine(DATABASE_CONFIG['url'])
+            connection_url = f"postgresql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}/{DATABASE_CONFIG['database']}"
+            
+            if IS_RAILWAY:
+                # Configuración optimizada para Railway
+                engine = create_engine(
+                    connection_url,
+                    pool_size=3,
+                    max_overflow=5,
+                    pool_timeout=20,
+                    pool_recycle=1800,
+                    connect_args={
+                        'sslmode': 'require',
+                        'connect_timeout': 10,
+                        'application_name': 'TelmexNormalizacion-Railway'
+                    }
+                )
             else:
-                # Local: usar configuración tradicional
-                config = DATABASE_CONFIG
-                connection_string = f"postgresql://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['database']}"
-                engine = create_engine(connection_string)
+                # Configuración para desarrollo local
+                engine = create_engine(
+                    connection_url,
+                    pool_size=5,
+                    max_overflow=10,
+                    pool_timeout=30,
+                    pool_recycle=3600,
+                    connect_args={
+                        'sslmode': 'prefer',
+                        'connect_timeout': 5,
+                        'application_name': 'TelmexNormalizacion-Local'
+                    }
+                )
+            
+            # Probar conexión
+            with engine.connect() as conn:
+                result = conn.execute(text("SELECT version()"))
+                version = result.fetchone()[0]
+            
+            # Mensaje diferente según ambiente
+            if IS_RAILWAY:
+                st.success("✅ 🚂 Conexión Railway establecida")
+            else:
+                st.success("✅ 🏠 Conexión Local establecida")
+                st.info(f"🗄️ PostgreSQL: {version.split(',')[0]}")
             
             return engine
+            
         except Exception as e:
-            st.error(f"Error de conexión: {e}")
+            if IS_RAILWAY:
+                st.error(f"❌ 🚂 Error conexión Railway: {str(e)}")
+            else:
+                st.error(f"❌ 🏠 Error conexión Local: {str(e)}")
+                st.code(f"""
+    Configuración utilizada:
+    Host: {DATABASE_CONFIG['host']}
+    Puerto: {DATABASE_CONFIG['port']}
+    BD: {DATABASE_CONFIG['database']}
+    Usuario: {DATABASE_CONFIG['user']}
+                """)
             return None
     
     def crear_tablas_sistema(self):
@@ -1097,7 +1174,10 @@ class SistemaNormalizacion:
             st.error(f"Error creando tablas: {e}")
     
     def validar_estructura_archivo(self, df, tipo_catalogo):
-        """Validar que el archivo tenga la estructura correcta de AS400 - CORREGIDA"""
+        """
+        Validar que el archivo tenga la estructura correcta de AS400 - PERMITE CAMPOS VACÍOS
+        REEMPLAZAR EL MÉTODO EXISTENTE validar_estructura_archivo() POR ESTE
+        """
         
         if tipo_catalogo not in ESQUEMAS_AS400:
             return False, f"Tipo de catálogo no válido: {tipo_catalogo}"
@@ -1115,20 +1195,38 @@ class SistemaNormalizacion:
         if len(df) == 0:
             return False, "❌ El archivo está vacío"
         
-        # Verificar longitudes
+        # VALIDACIÓN DE LONGITUDES CORREGIDA - PERMITE VACÍOS
         errores_longitud = []
+        
         for columna, config in esquema.items():
             if columna in df.columns:
-                # Convertir a string y calcular longitud máxima
+                # CRÍTICO: Limpiar y manejar valores vacíos correctamente
                 df[columna] = df[columna].astype(str)
-                max_length = df[columna].str.len().max()
-                if max_length > config['longitud']:
-                    errores_longitud.append(f"❌ {columna}: longitud máxima {max_length} > esperado {config['longitud']}")
+                
+                # NUEVA LÓGICA: Solo validar registros que NO estén vacíos
+                registros_con_datos = df[columna][
+                    (df[columna] != 'nan') & 
+                    (df[columna] != '') & 
+                    (df[columna].notna()) &
+                    (df[columna] != 'None')
+                ]
+                
+                if len(registros_con_datos) > 0:
+                    max_length = registros_con_datos.str.len().max()
+                    
+                    if max_length > config['longitud']:
+                        # Contar cuántos registros exceden la longitud
+                        registros_largos = (registros_con_datos.str.len() > config['longitud']).sum()
+                        
+                        errores_longitud.append(
+                            f"❌ {columna}: {registros_largos} registros exceden longitud máxima "
+                            f"(encontrado: {max_length}, esperado: {config['longitud']})"
+                        )
         
         if errores_longitud:
             return False, f"Errores de longitud:\n" + "\n".join(errores_longitud)
         
-        # Verificar que el campo de descripción tenga datos
+        # VERIFICACIÓN DEL CAMPO DESCRIPCIÓN - TAMBIÉN CORREGIDA
         CAMPO_DESCRIPCION_MAP = {
             'ESTADOS': 'STADES',
             'CIUDADES': 'CTYDES', 
@@ -1139,17 +1237,39 @@ class SistemaNormalizacion:
         
         campo_desc = CAMPO_DESCRIPCION_MAP.get(tipo_catalogo)
         if campo_desc and campo_desc in df.columns:
-            registros_vacios = df[campo_desc].isna().sum() + (df[campo_desc] == '').sum()
-            if registros_vacios > 0:
-                return False, f"⚠️ {registros_vacios} registros tienen campo de descripción vacío en {campo_desc}"
+            # Solo validar que el campo de descripción tenga algunos datos
+            registros_vacios_desc = df[campo_desc][
+                (df[campo_desc] == 'nan') | 
+                (df[campo_desc] == '') | 
+                (df[campo_desc].isna()) |
+                (df[campo_desc] == 'None')
+            ]
+            
+            porcentaje_vacios = len(registros_vacios_desc) / len(df) * 100
+            
+            # Permitir hasta 10% de registros vacíos en descripción
+            if porcentaje_vacios > 10:
+                return False, f"⚠️ {len(registros_vacios_desc)} registros ({porcentaje_vacios:.1f}%) tienen campo de descripción vacío en {campo_desc}. Máximo permitido: 10%"
+            elif porcentaje_vacios > 0:
+                # Solo advertencia si hay pocos vacíos
+                print(f"⚠️ Advertencia: {len(registros_vacios_desc)} registros con {campo_desc} vacío ({porcentaje_vacios:.1f}%)")
         
         return True, f"✅ Estructura válida: {len(df)} registros, {len(columnas_archivo)} columnas"
-    
+
+
+
     def procesar_archivo_cargado(self, df, tipo_catalogo, division, nombre_archivo):
-        """Procesar un archivo cargado y normalizarlo - CORREGIDO"""
+        """
+        Procesar un archivo cargado y normalizarlo - CON LIMPIEZA PREVIA
+        REEMPLAZAR EL MÉTODO EXISTENTE EN LA CLASE SistemaNormalizacion
+        """
         
-        # Validar estructura
-        valido, mensaje = self.validar_estructura_archivo(df, tipo_catalogo)
+        # PASO 1: LIMPIAR DataFrame antes de validar
+        print(f"🧹 Limpiando DataFrame antes de validación...")
+        df_limpio = preparar_dataframe_para_validacion(df)
+        
+        # PASO 2: Validar estructura con DataFrame limpio
+        valido, mensaje = self.validar_estructura_archivo(df_limpio, tipo_catalogo)
         if not valido:
             return False, mensaje
         
@@ -1167,11 +1287,11 @@ class SistemaNormalizacion:
                     'nombre': nombre_archivo,
                     'tipo': tipo_catalogo,
                     'division': division,
-                    'total': len(df)
+                    'total': len(df_limpio)  # Usar DataFrame limpio
                 })
                 conn.commit()
             
-            # Procesar registros
+            # PASO 3: Procesar registros con DataFrame limpio
             resultados = []
             esquema = ESQUEMAS_AS400[tipo_catalogo]
             
@@ -1186,7 +1306,7 @@ class SistemaNormalizacion:
             
             campo_descripcion = CAMPO_DESCRIPCION_MAP.get(tipo_catalogo)
             
-            if not campo_descripcion or campo_descripcion not in df.columns:
+            if not campo_descripcion or campo_descripcion not in df_limpio.columns:
                 return False, f"Campo de descripción '{campo_descripcion}' no encontrado para {tipo_catalogo}"
             
             # CORRECCIÓN: Mapeo de campos de status y clave
@@ -1209,14 +1329,14 @@ class SistemaNormalizacion:
             campo_status = CAMPO_STATUS_MAP.get(tipo_catalogo)
             campo_clave = CAMPO_CLAVE_MAP.get(tipo_catalogo)
             
-            # Procesar cada registro
-            for idx, row in df.iterrows():
+            # Procesar cada registro del DataFrame limpio
+            for idx, row in df_limpio.iterrows():
                 resultado = self.normalizar_registro(
                     texto_original=str(row[campo_descripcion]),
                     tipo_catalogo=tipo_catalogo,
                     division=division,
-                    campo_status=str(row.get(campo_status, '')),
-                    campo_clave=str(row.get(campo_clave, '')),
+                    campo_status=str(row.get(campo_status, '')),  # Manejo de vacíos
+                    campo_clave=str(row.get(campo_clave, '')),    # Manejo de vacíos
                     campo_descripcion=str(row[campo_descripcion])
                 )
                 
@@ -1225,7 +1345,7 @@ class SistemaNormalizacion:
                 
                 # Actualizar progreso cada 100 registros
                 if (idx + 1) % 100 == 0:
-                    progreso = (idx + 1) / len(df) * 100
+                    progreso = (idx + 1) / len(df_limpio) * 100
                     self.actualizar_progreso_archivo(id_archivo, progreso)
             
             # Guardar resultados en BD
@@ -1240,10 +1360,15 @@ class SistemaNormalizacion:
                 """), {'id_archivo': id_archivo})
                 conn.commit()
             
-            return True, f"Procesados {len(resultados)} registros correctamente"
+            return True, f"Procesados {len(resultados)} registros correctamente (con limpieza previa)"
             
         except Exception as e:
             return False, f"Error procesando archivo: {str(e)}"
+
+
+
+
+
     
     def normalizar_registro(self, texto_original, tipo_catalogo, division, campo_status, campo_clave, campo_descripcion):
         """Normalizar un registro individual usando los algoritmos de IA"""
@@ -1927,7 +2052,8 @@ def mostrar_carga_archivos_datos():
     
     # MOSTRAR ESTRUCTURA ESPERADA SOLO SI TIPO ES VÁLIDO
     if tipo_valido:
-        mostrar_estructura_esperada_mejorada(tipo_catalogo)
+        #mostrar_estructura_esperada_mejorada(tipo_catalogo)
+        mostrar_estructura_esperada_mejorada_ACTUALIZADA(tipo_catalogo)
     
     # CONTROL DE FILE UPLOADER BASADO EN AMBAS SELECCIONES
     st.markdown("#### 📤 Subir Archivos:")
@@ -2088,7 +2214,7 @@ def mostrar_carga_archivos_datos():
         ---
         
         **⚠️ Notas importantes:**
-        - Los archivos deben estar en formato CSV
+        - Los archivos deben estar en formato CSV UTF-8
         - La primera fila debe contener los nombres de las columnas
         - Verifica que los datos coincidan con la estructura AS400
         """)
@@ -2335,7 +2461,7 @@ def mostrar_carga_referencias():
         ---
         
         **⚠️ Notas importantes:**
-        - El archivo debe estar en formato CSV
+        - El archivo debe estar en formato CSV UTF-8
         - La primera fila debe contener los nombres de las columnas
         - Los datos nuevos **reemplazarán** las referencias existentes del mismo tipo
         """)
@@ -2862,7 +2988,7 @@ def mostrar_configuracion_sistema():
 # ========================================
 
 def mostrar_config_base_datos():
-    """Configuración de base de datos - CORREGIDA"""
+    """Configuración de base de datos - VERSIÓN CORREGIDA"""
     
     st.markdown("### 🗄️ Configuración de PostgreSQL")
     
@@ -2897,7 +3023,14 @@ def mostrar_config_base_datos():
                 tablas_stats = []
                 for row in result:
                     if row is not None:
-                        tablas_stats.append(dict(row._mapping))
+                        # Crear diccionario manualmente
+                        tablas_stats.append({
+                            'schemaname': row[0],
+                            'tablename': row[1],
+                            'inserts': row[2],
+                            'updates': row[3],
+                            'deletes': row[4]
+                        })
             
             # Mostrar información básica (todos pueden ver)
             st.info(f"**Versión PostgreSQL:** {version}")
@@ -2906,7 +3039,8 @@ def mostrar_config_base_datos():
                 st.markdown("#### 📊 Estadísticas de Tablas:")
                 
                 df_stats = pd.DataFrame(tablas_stats)
-                df_stats.columns = ['Esquema', 'Tabla', 'Inserts', 'Updates', 'Deletes']
+                df_stats = df_stats[['tablename', 'inserts', 'updates', 'deletes']].copy()
+                df_stats.columns = ['Tabla', 'Inserts', 'Updates', 'Deletes']
                 
                 st.dataframe(df_stats, use_container_width=True, hide_index=True)
             else:
@@ -2914,6 +3048,20 @@ def mostrar_config_base_datos():
             
         except Exception as e:
             st.error(f"Error obteniendo información de BD: {str(e)}")
+            
+            # Debug solo para administradores
+            if rol_usuario in ['SUPERUSUARIO', 'GERENTE']:
+                if st.checkbox("🔧 Mostrar detalles técnicos"):
+                    st.code(f"""
+Error: {str(e)}
+Tipo: {type(e).__name__}
+
+Consulta problemática: pg_stat_user_tables
+Posibles soluciones:
+1. Verificar permisos de usuario PostgreSQL
+2. Actualizar estadísticas: ANALYZE;
+3. Verificar que existan tablas en el esquema public
+                    """)
     
     else:
         st.error("❌ No hay conexión a PostgreSQL")
@@ -2922,19 +3070,22 @@ def mostrar_config_base_datos():
         st.markdown("### 🔧 Solución de Problemas:")
         st.markdown("""
         **Verifica la configuración:**
-        - Host: localhost
+        - Host: localhost (o Railway)
         - Puerto: 5432
         - Base de datos: normalizacion_domicilios
         - Usuario: postgres
-        - Contraseña: admin123
+        - Contraseña: [configurada]
         
-        **Comandos útiles:**
+        **Comandos útiles para desarrollo local:**
         ```bash
         # Verificar si PostgreSQL está corriendo
         sudo systemctl status postgresql
         
         # Crear base de datos
         createdb normalizacion_domicilios
+        
+        # Conectar manualmente
+        psql -h localhost -U postgres -d normalizacion_domicilios
         ```
         """)
     
@@ -3004,64 +3155,129 @@ def mostrar_gestion_referencias():
             exportar_referencias(sistema)
 
 def mostrar_mantenimiento_sistema():
-    """Herramientas de mantenimiento del sistema"""
+    """Herramientas de mantenimiento del sistema - VERSIÓN MEJORADA"""
     
     st.markdown("### 🧹 Mantenimiento del Sistema")
     
     sistema = SistemaNormalizacion()
     
-    # Estadísticas de espacio
-    try:
-        with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT 
-                    schemaname,
-                    tablename,
-                    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size,
-                    pg_total_relation_size(schemaname||'.'||tablename) as size_bytes
-                FROM pg_tables 
-                WHERE schemaname = 'public'
-                ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
-            """))
-            
-            tabla_sizes = [dict(row) for row in result]
+    # Pestañas para organizar mejor
+    tab1, tab2, tab3 = st.tabs(["🛠️ Mantenimiento Básico", "🗄️ Espacio en Disco", "🗑️ Limpieza de Datos"])
     
-        if tabla_sizes:
-            st.markdown("#### 💽 Uso de Espacio por Tabla:")
-            
-            df_sizes = pd.DataFrame(tabla_sizes)
-            df_sizes = df_sizes[['tablename', 'size']].copy()
-            df_sizes.columns = ['Tabla', 'Tamaño']
-            
-            st.dataframe(df_sizes, use_container_width=True, hide_index=True)
+    with tab1:
+        mantenimiento_basico_seguro(sistema)
+        mostrar_informacion_mantenimiento()
     
-    except Exception as e:
-        st.error(f"Error consultando espacio: {str(e)}")
+    with tab2:
+        # Estadísticas de espacio (código anterior corregido)
+        try:
+            with sistema.engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT 
+                        schemaname,
+                        tablename,
+                        pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size,
+                        pg_total_relation_size(schemaname||'.'||tablename) as size_bytes
+                    FROM pg_tables 
+                    WHERE schemaname = 'public'
+                    ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+                """))
+                
+                tabla_sizes = []
+                for row in result:
+                    if row is not None:
+                        tabla_sizes.append({
+                            'tablename': row[1], 
+                            'size': row[2]
+                        })
+        
+            if tabla_sizes:
+                st.markdown("#### 💽 Uso de Espacio por Tabla:")
+                df_sizes = pd.DataFrame(tabla_sizes)
+                df_sizes.columns = ['Tabla', 'Tamaño']
+                st.dataframe(df_sizes, use_container_width=True, hide_index=True)
+            else:
+                st.info("ℹ️ No se pudieron obtener estadísticas de espacio")
+        
+        except Exception as e:
+            st.warning(f"⚠️ No se pueden mostrar estadísticas de espacio: {str(e)}")
+            st.info("💡 Esto puede ser normal si no tienes permisos para consultar pg_tables")
     
-    st.markdown("---")
+    with tab3:
+        st.markdown("#### 🗑️ Limpieza de Datos Antiguos:")
+        
+        dias_antiguos = st.number_input(
+            "Eliminar registros anteriores a (días):", 
+            value=90, 
+            min_value=30, 
+            max_value=365,
+            help="Los datos anteriores a esta fecha serán eliminados permanentemente"
+        )
+        
+        limpiar_datos_antiguos(sistema, dias_antiguos)
+
+# ========================================
+# FUNCIÓN ALTERNATIVA PARA MANTENIMIENTO BÁSICO
+# AGREGAR ESTA NUEVA FUNCIÓN
+# ========================================
+
+def mantenimiento_basico_seguro(sistema):
+    """Mantenimiento básico sin VACUUM (más seguro)"""
     
-    # Herramientas de limpieza
-    st.markdown("#### 🧹 Herramientas de Limpieza:")
+    st.markdown("### 🛠️ Mantenimiento Básico (Seguro)")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("**Limpieza de Datos Antiguos:**")
-        
-        dias_antiguos = st.number_input("Eliminar registros anteriores a (días):", value=90, min_value=30, max_value=365)
-        
-        if st.button("🗑️ Limpiar Datos Antiguos", type="secondary"):
-            if st.checkbox("Confirmar eliminación de datos antiguos"):
-                limpiar_datos_antiguos(sistema, dias_antiguos)
+        if st.button("📊 Solo ANALYZE (Recomendado)", type="primary"):
+            try:
+                with sistema.engine.connect() as conn:
+                    # Solo ANALYZE, sin VACUUM
+                    conn.execute(text("ANALYZE"))
+                    conn.commit()
+                
+                st.success("✅ Estadísticas actualizadas con ANALYZE")
+                st.info("📊 El rendimiento de consultas ha sido optimizado")
+                
+            except Exception as e:
+                st.error(f"Error en ANALYZE: {str(e)}")
     
     with col2:
-        st.markdown("**Optimización de Base de Datos:**")
-        
-        if st.button("⚡ Optimizar Tablas", type="secondary"):
-            optimizar_tablas(sistema)
-        
-        if st.button("📊 Actualizar Estadísticas", type="secondary"):
-            actualizar_estadisticas_bd(sistema)
+        if st.button("🧹 VACUUM Completo (Avanzado)"):
+            if st.checkbox("⚠️ Confirmar VACUUM (puede tomar tiempo)"):
+                optimizar_tablas(sistema)
+
+def mostrar_informacion_mantenimiento():
+    """Mostrar información sobre las opciones de mantenimiento"""
+    
+    st.markdown("### ℹ️ Información de Mantenimiento")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        **📊 ANALYZE (Recomendado):**
+        - ✅ Rápido y seguro
+        - ✅ Actualiza estadísticas
+        - ✅ Mejora rendimiento
+        - ✅ No bloquea tablas
+        """)
+    
+    with col2:
+        st.markdown("""
+        **🧹 VACUUM (Avanzado):**
+        - ⚠️ Puede tomar tiempo
+        - ⚠️ Requiere permisos especiales
+        - ✅ Libera espacio físico
+        - ✅ Reorganiza tablas
+        """)
+    
+    st.info("""
+    **💡 Recomendación:**
+    - Para uso diario: Usar solo **ANALYZE**
+    - Para mantenimiento profundo: Usar **VACUUM** cuando la aplicación tenga poco tráfico
+    - La diferencia principal es que VACUUM libera espacio físico, pero es más lento
+    """)
 
 
 
@@ -3335,7 +3551,7 @@ def mostrar_graficos_analisis():
 # ========================================
 
 def mostrar_estadisticas_sistema():
-    """Estadísticas detalladas del sistema - COMPLETAMENTE CORREGIDO"""
+    """Estadísticas detalladas del sistema - VERSIÓN CORREGIDA"""
     
     st.markdown("### 📊 Estadísticas del Sistema")
     
@@ -3361,7 +3577,17 @@ def mostrar_estadisticas_sistema():
             # CORRECCIÓN PRINCIPAL
             row = result.fetchone()
             if row is not None:
-                stats_generales = dict(row._mapping)
+                # Crear diccionario manualmente para evitar errores
+                stats_generales = {
+                    'total_archivos': row[0] or 0,
+                    'total_registros_cargados': row[1] or 0,
+                    'total_registros_procesados': row[2] or 0,
+                    'registros_exitosos': row[3] or 0,
+                    'requieren_revision': row[4] or 0,
+                    'confianza_promedio': row[5] or 0,
+                    'primera_carga': row[6],
+                    'ultima_carga': row[7]
+                }
             else:
                 stats_generales = {
                     'total_archivos': 0,
@@ -3374,12 +3600,7 @@ def mostrar_estadisticas_sistema():
                     'ultima_carga': None
                 }
             
-            # Asegurar valores no None
-            for key in stats_generales:
-                if stats_generales[key] is None and key not in ['primera_carga', 'ultima_carga']:
-                    stats_generales[key] = 0
-            
-            # Estadísticas por división
+            # Estadísticas por división - CORREGIDO
             result = conn.execute(text("""
                 SELECT 
                     r.division,
@@ -3393,9 +3614,15 @@ def mostrar_estadisticas_sistema():
             
             stats_division = []
             for row in result:
-                stats_division.append(dict(row._mapping))
+                if row is not None:
+                    stats_division.append({
+                        'division': row[0],
+                        'total': row[1],
+                        'exitosos': row[2],
+                        'confianza_promedio': row[3] or 0
+                    })
             
-            # Estadísticas por método
+            # Estadísticas por método - CORREGIDO
             result = conn.execute(text("""
                 SELECT 
                     metodo_usado,
@@ -3409,7 +3636,12 @@ def mostrar_estadisticas_sistema():
             
             stats_metodos = []
             for row in result:
-                stats_metodos.append(dict(row._mapping))
+                if row is not None:
+                    stats_metodos.append({
+                        'metodo_usado': row[0],
+                        'cantidad': row[1],
+                        'confianza_promedio': row[2] or 0
+                    })
     
         # Mostrar estadísticas generales
         st.markdown("#### 📈 Estadísticas Generales:")
@@ -3474,6 +3706,15 @@ def mostrar_estadisticas_sistema():
     
     except Exception as e:
         st.error(f"Error obteniendo estadísticas: {str(e)}")
+        
+        # Debug detallado para administradores
+        usuario_actual = st.session_state.get('usuario_actual', {})
+        rol_usuario = usuario_actual.get('rol', 'USUARIO')
+        
+        if rol_usuario in ['SUPERUSUARIO', 'GERENTE']:
+            if st.checkbox("🔧 Ver detalles del error de estadísticas"):
+                import traceback
+                st.code(traceback.format_exc())
 
 
 # ========================================
@@ -3518,19 +3759,71 @@ def main_aplicacion_original():
     """, unsafe_allow_html=True)
     
     # Header principal
-    col_logo, col_title = st.columns([1, 8])
+    # RRV01 col_logo, col_title = st.columns([1, 8])
+    # with col_logo:
+    #     try:
+    #         st.image("logo_RN.png", width=120)
+    #     except:
+    #         st.markdown("🏠")
+    # with col_title:
+    #     st.markdown("""
+    #     <div  style="text-align: left;">
+    #         <h3>Red Nacional Última Milla</h3>
+    #         <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
+    #     </div>
+    #     """, unsafe_allow_html=True)
+
+    # Header principal CON INDICADOR DE AMBIENTE
+    col_logo, col_title, col_env = st.columns([1, 7, 1])
+    
     with col_logo:
         try:
             st.image("logo_RN.png", width=120)
         except:
             st.markdown("🏠")
+    
     with col_title:
         st.markdown("""
-        <div  style="text-align: left;">
+        <div style="text-align: left;">
             <h3>Red Nacional Última Milla</h3>
             <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
         </div>
         """, unsafe_allow_html=True)
+    
+    with col_env:
+        # NUEVO: Indicador de ambiente
+        if IS_RAILWAY:
+            st.markdown("""
+            <div style="
+                background: #10b981; 
+                color: white; 
+                padding: 0.5rem; 
+                border-radius: 12px; 
+                text-align: center;
+                font-size: 0.85rem;
+                font-weight: bold;
+                margin-top: 1rem;
+            ">
+                🚂 RAILWAY<br>
+                <small style="opacity: 0.8;">Producción</small>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="
+                background: #3b82f6; 
+                color: white; 
+                padding: 0.5rem; 
+                border-radius: 12px; 
+                text-align: center;
+                font-size: 0.85rem;
+                font-weight: bold;
+                margin-top: 1rem;
+            ">
+                🏠 LOCAL<br>
+                <small style="opacity: 0.8;">Desarrollo</small>
+            </div>
+            """, unsafe_allow_html=True)
     
     # NAVEGACIÓN PRINCIPAL CON CONTROL POR ROL
     # Obtener rol del usuario actual
@@ -3611,6 +3904,44 @@ def mostrar_seccion_resultados():
     # Consultar resultados
     if st.button("🔍 Buscar Resultados"):
         consultar_resultados_historicos(sistema, tipo_filtro, division_filtro, fecha_desde)
+# ========================================
+# FUNCIÓN GENÉRICA PARA MANEJAR RESULTADOS SQL
+# AGREGAR ESTA FUNCIÓN NUEVA AL ARCHIVO
+# ========================================
+
+def sql_result_to_dict_list(result):
+    """
+    Convertir resultado SQL a lista de diccionarios de forma segura
+    Función auxiliar para evitar errores de SQLAlchemy 2.0
+    """
+    
+    dict_list = []
+    
+    try:
+        for row in result:
+            if row is not None:
+                # Usar _mapping si está disponible (SQLAlchemy 2.0)
+                if hasattr(row, '_mapping'):
+                    dict_list.append(dict(row._mapping))
+                # Fallback para versiones anteriores
+                else:
+                    dict_list.append(dict(row))
+    
+    except Exception as e:
+        print(f"Error convirtiendo resultado SQL: {e}")
+        # Intentar método alternativo
+        try:
+            for row in result:
+                if row is not None:
+                    # Crear diccionario manualmente usando nombres de columnas
+                    row_dict = {}
+                    for i, column in enumerate(result.keys()):
+                        row_dict[column] = row[i]
+                    dict_list.append(row_dict)
+        except Exception as e2:
+            print(f"Error en método alternativo: {e2}")
+    
+    return dict_list
 
 def consultar_resultados_historicos(sistema, tipo_filtro, division_filtro, fecha_desde):
     """Consultar resultados históricos con filtros - CORREGIDA"""
@@ -3820,7 +4151,7 @@ def validar_integridad_referencias(sistema):
         st.error(f"Error validando integridad: {str(e)}")
 
 def exportar_referencias(sistema):
-    """Exportar todas las referencias"""
+    """Exportar todas las referencias - VERSIÓN CORREGIDA"""
     
     try:
         with sistema.engine.connect() as conn:
@@ -3830,7 +4161,12 @@ def exportar_referencias(sistema):
                 ORDER BY tipo_catalogo, nombre_oficial
             """))
             
-            referencias = [dict(row) for row in result]
+            # CORRECCIÓN: Usar _mapping para SQLAlchemy 2.0
+            referencias = []
+            for row in result:
+                if row is not None:
+                    # Convertir Row a diccionario correctamente
+                    referencias.append(dict(row._mapping))
         
         if referencias:
             df_export = pd.DataFrame(referencias)
@@ -3849,66 +4185,250 @@ def exportar_referencias(sistema):
     
     except Exception as e:
         st.error(f"Error exportando referencias: {str(e)}")
+        
+        # Debug detallado
+        if st.checkbox("🔧 Mostrar detalles técnicos del error"):
+            import traceback
+            st.code(traceback.format_exc())
 
 def limpiar_datos_antiguos(sistema, dias):
-    """Limpiar datos anteriores a X días"""
+    """Limpiar datos anteriores a X días - VERSIÓN MEJORADA"""
     
     try:
         fecha_limite = datetime.now() - timedelta(days=dias)
         
+        # Usar SQLAlchemy normal (no necesita autocommit)
         with sistema.engine.connect() as conn:
-            # Eliminar resultados antiguos
+            
+            # Mostrar cuántos registros se van a eliminar
             result = conn.execute(text("""
-                DELETE FROM resultados_normalizacion 
+                SELECT COUNT(*) FROM resultados_normalizacion 
                 WHERE fecha_proceso < :fecha_limite
             """), {'fecha_limite': fecha_limite})
             
-            resultados_eliminados = result.rowcount
+            registros_a_eliminar = result.fetchone()[0]
             
-            # Eliminar archivos sin resultados
             result = conn.execute(text("""
-                DELETE FROM archivos_cargados 
+                SELECT COUNT(*) FROM archivos_cargados 
                 WHERE fecha_carga < :fecha_limite
                 AND id_archivo NOT IN (SELECT DISTINCT id_archivo FROM resultados_normalizacion)
             """), {'fecha_limite': fecha_limite})
             
-            archivos_eliminados = result.rowcount
+            archivos_a_eliminar = result.fetchone()[0]
             
-            conn.commit()
-        
-        st.success(f"✅ Eliminados: {resultados_eliminados} resultados y {archivos_eliminados} archivos")
+            # Mostrar preview
+            st.warning(f"""
+            **Vista previa de eliminación:**
+            - 📊 Resultados a eliminar: {registros_a_eliminar:,}
+            - 📄 Archivos a eliminar: {archivos_a_eliminar:,}
+            - 📅 Anteriores a: {fecha_limite.strftime('%Y-%m-%d')}
+            """)
+            
+            if registros_a_eliminar > 0 or archivos_a_eliminar > 0:
+                if st.button("🗑️ CONFIRMAR ELIMINACIÓN", type="primary"):
+                    
+                    # Crear barra de progreso
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    # Eliminar resultados antiguos
+                    status_text.text("🗑️ Eliminando resultados antiguos...")
+                    progress_bar.progress(0.3)
+                    
+                    result = conn.execute(text("""
+                        DELETE FROM resultados_normalizacion 
+                        WHERE fecha_proceso < :fecha_limite
+                    """), {'fecha_limite': fecha_limite})
+                    
+                    resultados_eliminados = result.rowcount
+                    
+                    # Eliminar archivos sin resultados
+                    status_text.text("🗑️ Eliminando archivos huérfanos...")
+                    progress_bar.progress(0.7)
+                    
+                    result = conn.execute(text("""
+                        DELETE FROM archivos_cargados 
+                        WHERE fecha_carga < :fecha_limite
+                        AND id_archivo NOT IN (SELECT DISTINCT id_archivo FROM resultados_normalizacion)
+                    """), {'fecha_limite': fecha_limite})
+                    
+                    archivos_eliminados = result.rowcount
+                    
+                    # Confirmar cambios
+                    status_text.text("💾 Guardando cambios...")
+                    progress_bar.progress(0.9)
+                    
+                    conn.commit()
+                    
+                    # Completado
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ Limpieza completada")
+                    
+                    st.success(f"""
+                    ✅ **Limpieza completada:**
+                    - 📊 Resultados eliminados: {resultados_eliminados:,}
+                    - 📄 Archivos eliminados: {archivos_eliminados:,}
+                    - 💾 Espacio liberado en base de datos
+                    """)
+                    
+                    # Recomendar optimización después de eliminar muchos datos
+                    if resultados_eliminados > 1000:
+                        st.info("💡 **Recomendación:** Ejecuta 'Optimizar Tablas' para liberar espacio físico")
+            
+            else:
+                st.info(f"ℹ️ No hay datos anteriores a {fecha_limite.strftime('%Y-%m-%d')} para eliminar")
     
     except Exception as e:
         st.error(f"Error limpiando datos antiguos: {str(e)}")
 
 def optimizar_tablas(sistema):
-    """Optimizar tablas de PostgreSQL"""
+    """Optimizar tablas de PostgreSQL - VERSIÓN CORREGIDA"""
     
     try:
-        with sistema.engine.connect() as conn:
-            # VACUUM y ANALYZE en tablas principales
-            tablas = ['resultados_normalizacion', 'archivos_cargados', 'referencias_normalizacion']
-            
-            for tabla in tablas:
-                conn.execute(text(f"VACUUM ANALYZE {tabla}"))
-            
-            conn.commit()
+        # SOLUCIÓN: Usar psycopg2 directo con autocommit
+        import psycopg2
         
-        st.success("✅ Tablas optimizadas correctamente")
-    
+        # Crear conexión directa con autocommit habilitado
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
+        
+        # CRÍTICO: Habilitar autocommit para VACUUM
+        conn.autocommit = True
+        cursor = conn.cursor()
+        
+        # Lista de tablas principales
+        tablas = ['resultados_normalizacion', 'archivos_cargados', 'referencias_normalizacion', 'usuarios', 'sesiones_usuario']
+        
+        # Crear barra de progreso
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        tablas_optimizadas = 0
+        
+        for i, tabla in enumerate(tablas):
+            try:
+                status_text.text(f"⚡ Optimizando tabla: {tabla}...")
+                
+                # Verificar que la tabla existe antes de hacer VACUUM
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = %s
+                    )
+                """, (tabla,))
+                
+                existe = cursor.fetchone()[0]
+                
+                if existe:
+                    # VACUUM ANALYZE sin transacción
+                    cursor.execute(f"VACUUM ANALYZE {tabla}")
+                    tablas_optimizadas += 1
+                    st.success(f"✅ {tabla} optimizada")
+                else:
+                    st.warning(f"⚠️ Tabla {tabla} no existe, omitiendo")
+                
+            except Exception as e:
+                st.warning(f"⚠️ Error optimizando {tabla}: {str(e)}")
+            
+            # Actualizar progreso
+            progress_bar.progress((i + 1) / len(tablas))
+        
+        conn.close()
+        
+        # Resultado final
+        status_text.text("✅ Optimización completada")
+        st.success(f"✅ {tablas_optimizadas} tablas optimizadas correctamente")
+        
+        # Información adicional
+        st.info("""
+        **Optimización realizada:**
+        - ⚡ VACUUM: Liberó espacio no utilizado
+        - 📊 ANALYZE: Actualizó estadísticas del planificador
+        - 🚀 Rendimiento mejorado en consultas futuras
+        """)
+        
     except Exception as e:
         st.error(f"Error optimizando tablas: {str(e)}")
+        
+        # Información de ayuda
+        st.markdown("### 🔧 Información del Error:")
+        st.code(f"""
+Error: {str(e)}
+
+Posibles causas:
+1. Permisos insuficientes para VACUUM
+2. Conexión dentro de transacción
+3. Base de datos bloqueada
+
+Solución aplicada:
+- Usar psycopg2 directo con autocommit=True
+- Verificar existencia de tablas antes de VACUUM
+        """)
 
 def actualizar_estadisticas_bd(sistema):
-    """Actualizar estadísticas de PostgreSQL"""
+    """Actualizar estadísticas de PostgreSQL - VERSIÓN CORREGIDA"""
     
     try:
-        with sistema.engine.connect() as conn:
-            conn.execute(text("ANALYZE"))
-            conn.commit()
+        import psycopg2
+        
+        # Conexión directa con autocommit para ANALYZE
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
+        
+        conn.autocommit = True
+        cursor = conn.cursor()
+        
+        # Crear indicador de progreso
+        with st.spinner("📊 Actualizando estadísticas de la base de datos..."):
+            # ANALYZE global (más seguro que VACUUM)
+            cursor.execute("ANALYZE")
+            
+            # También actualizar estadísticas específicas de tablas importantes
+            tablas_importantes = [
+                'resultados_normalizacion',
+                'archivos_cargados', 
+                'referencias_normalizacion'
+            ]
+            
+            for tabla in tablas_importantes:
+                try:
+                    # Verificar que existe
+                    cursor.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' AND table_name = %s
+                        )
+                    """, (tabla,))
+                    
+                    if cursor.fetchone()[0]:
+                        cursor.execute(f"ANALYZE {tabla}")
+                
+                except Exception as e:
+                    print(f"Warning: No se pudo analizar {tabla}: {e}")
+        
+        conn.close()
         
         st.success("✅ Estadísticas de base de datos actualizadas")
-    
+        
+        # Mostrar información de lo que se hizo
+        st.info("""
+        **Estadísticas actualizadas:**
+        - 📊 Planificador de consultas optimizado
+        - 🎯 Estimaciones de cardinalidad mejoradas  
+        - ⚡ Planes de ejecución más eficientes
+        """)
+        
     except Exception as e:
         st.error(f"Error actualizando estadísticas: {str(e)}")
 
@@ -4380,7 +4900,7 @@ Tipo: {type(e).__name__}
 def eliminar_archivo_ultra_simple(id_archivo):
     """
     Eliminación ultra simple usando psycopg2 directo
-    CORREGIDA PARA RAILWAY
+    REEMPLAZAR LA FUNCIÓN PROBLEMÁTICA POR ESTA
     """
     
     st.markdown("### 🗑️ Eliminación Ultra Simple")
@@ -4392,38 +4912,22 @@ def eliminar_archivo_ultra_simple(id_archivo):
             
             try:
                 import psycopg2
-                from urllib.parse import urlparse
                 
                 # Progreso
                 progress = st.progress(0)
                 status = st.empty()
                 
-                # CORRECCIÓN: Conectar según el ambiente
+                # Conectar con psycopg2 directo
                 status.text("🔌 Conectando con psycopg2...")
                 progress.progress(0.1)
                 
-                if IS_RAILWAY and 'url' in DATABASE_CONFIG:
-                    # En Railway: parsear DATABASE_URL
-                    database_url = DATABASE_CONFIG['url']
-                    parsed = urlparse(database_url)
-                    
-                    conn = psycopg2.connect(
-                        host=parsed.hostname,
-                        port=parsed.port or 5432,
-                        database=parsed.path[1:],  # Quitar el '/' inicial
-                        user=parsed.username,
-                        password=parsed.password,
-                        sslmode='require'  # Railway requiere SSL
-                    )
-                else:
-                    # Local: usar configuración tradicional
-                    conn = psycopg2.connect(
-                        host=DATABASE_CONFIG['host'],
-                        port=DATABASE_CONFIG['port'],
-                        database=DATABASE_CONFIG['database'],
-                        user=DATABASE_CONFIG['user'],
-                        password=DATABASE_CONFIG['password']
-                    )
+                conn = psycopg2.connect(
+                    host=DATABASE_CONFIG['host'],
+                    port=DATABASE_CONFIG['port'],
+                    database=DATABASE_CONFIG['database'],
+                    user=DATABASE_CONFIG['user'],
+                    password=DATABASE_CONFIG['password']
+                )
                 
                 cursor = conn.cursor()
                 
@@ -4792,13 +5296,15 @@ def guardar_configuracion_sistema(batch_size, timeout, workers, cache_ttl):
 
 def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref, nombre_archivo):
     """
-    Función de carga que fuerza la actualización de la interfaz
-    CORREGIDA PARA RAILWAY
+    Función de carga que NORMALIZA las referencias antes de insertarlas
+    VERSIÓN CORREGIDA - REEMPLAZAR la función existente
     """
     
     try:
         import psycopg2
-        from urllib.parse import urlparse
+        
+        # CREAR INSTANCIA DEL SISTEMA PARA NORMALIZACIÓN
+        sistema = SistemaNormalizacion()
         
         # Validar datos básicos
         if 'nombre_oficial' not in df_ref.columns or 'codigo_oficial' not in df_ref.columns:
@@ -4810,31 +5316,45 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
             st.error(f"❌ Hay {registros_vacios} registros sin nombre oficial")
             return False
         
-        # CORRECCIÓN: Conectar según el ambiente
+        # ========================================
+        # NUEVA SECCIÓN: PRE-NORMALIZACIÓN
+        # ========================================
+        st.info("🧠 Normalizando nombres de referencia...")
+        
+        # Crear columna normalizada para preview
+        df_ref['nombre_normalizado'] = df_ref['nombre_oficial'].apply(
+            lambda x: sistema.limpiar_texto_inteligente(str(x), tipo_ref)
+        )
+        
+        # Mostrar preview de normalización (primeros 5)
+        with st.expander("👀 Preview de Normalización (primeros 5 registros)"):
+            preview_df = df_ref[['nombre_oficial', 'nombre_normalizado']].head().copy()
+            preview_df.columns = ['Original', 'Normalizado']
+            st.dataframe(preview_df, use_container_width=True)
+        
+        # Detectar cambios significativos
+        cambios = sum(1 for i, row in df_ref.iterrows() 
+                     if row['nombre_oficial'].upper().strip() != row['nombre_normalizado'])
+        
+        if cambios > 0:
+            st.warning(f"⚠️ Se normalizarán {cambios:,} nombres ({cambios/len(df_ref)*100:.1f}%)")
+        else:
+            st.success("✅ Los nombres ya están normalizados")
+        
+        # ========================================
+        # CONTINUAR CON INSERCIÓN NORMALIZADA
+        # ========================================
+        
+        # Conectar con psycopg2
         st.info("🔌 Conectando a PostgreSQL...")
         
-        if IS_RAILWAY and 'url' in DATABASE_CONFIG:
-            # En Railway: parsear DATABASE_URL
-            database_url = DATABASE_CONFIG['url']
-            parsed = urlparse(database_url)
-            
-            conn = psycopg2.connect(
-                host=parsed.hostname,
-                port=parsed.port or 5432,
-                database=parsed.path[1:],  # Quitar el '/' inicial
-                user=parsed.username,
-                password=parsed.password,
-                sslmode='require'  # Railway requiere SSL
-            )
-        else:
-            # Local: usar configuración tradicional
-            conn = psycopg2.connect(
-                host=DATABASE_CONFIG['host'],
-                port=DATABASE_CONFIG['port'],
-                database=DATABASE_CONFIG['database'],
-                user=DATABASE_CONFIG['user'],
-                password=DATABASE_CONFIG['password']
-            )
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
         
         cursor = conn.cursor()
         
@@ -4862,18 +5382,27 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
                 conn.close()
                 return False
         
-        # INSERTAR nuevas referencias
-        st.info(f"📥 Insertando {len(df_ref):,} nuevas referencias...")
+        # INSERTAR nuevas referencias NORMALIZADAS
+        st.info(f"📥 Insertando {len(df_ref):,} nuevas referencias normalizadas...")
         
         # Crear barra de progreso
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         insertados = 0
+        normalizados = 0
         timestamp_carga = datetime.now()
         
         for idx, row in df_ref.iterrows():
             try:
+                # CRÍTICO: USAR EL NOMBRE NORMALIZADO
+                nombre_original = str(row.get('nombre_oficial', ''))
+                nombre_normalizado = sistema.limpiar_texto_inteligente(nombre_original, tipo_ref)
+                
+                # Contar si hubo normalización
+                if nombre_original.upper().strip() != nombre_normalizado:
+                    normalizados += 1
+                
                 cursor.execute("""
                     INSERT INTO referencias_normalizacion 
                     (tipo_catalogo, codigo_oficial, nombre_oficial, nombre_alternativo, 
@@ -4883,8 +5412,8 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
                 """, (
                     tipo_ref,
                     str(row.get('codigo_oficial', f'AUTO_{idx}')),
-                    str(row.get('nombre_oficial', '')).strip(),
-                    json.dumps(row.get('nombres_alternativos', [])) if 'nombres_alternativos' in row else None,
+                    nombre_normalizado,  # ← CAMBIO CRÍTICO: USAR NORMALIZADO
+                    json.dumps([nombre_original] if nombre_original != nombre_normalizado else []),  # Guardar original como alternativo
                     float(row['coordenadas_lat']) if 'coordenadas_lat' in row and pd.notna(row['coordenadas_lat']) else None,
                     float(row['coordenadas_lng']) if 'coordenadas_lng' in row and pd.notna(row['coordenadas_lng']) else None,
                     str(row.get('estado_padre', '')) if 'estado_padre' in row and pd.notna(row.get('estado_padre')) else None,
@@ -4922,16 +5451,23 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
         
         conn.close()
         
-        # MOSTRAR RESULTADO FINAL
+        # MOSTRAR RESULTADO FINAL CON ESTADÍSTICAS DE NORMALIZACIÓN
         if total_final == insertados:
             st.success(f"""
-            ## 🎉 CARGA EXITOSA
+            ## 🎉 CARGA EXITOSA CON NORMALIZACIÓN
             
             **✅ Resultado:**
             - **Eliminadas:** {total_existentes:,} referencias anteriores
             - **Insertadas:** {insertados:,} nuevas referencias  
+            - **Normalizadas:** {normalizados:,} nombres ({normalizados/insertados*100:.1f}%)
             - **Total {tipo_ref}:** {total_final:,} referencias
             - **Total sistema:** {total_global:,} referencias
+            
+            **🧠 Normalización aplicada:**
+            - ✅ Convertidas a MAYÚSCULAS
+            - ✅ Acentos removidos
+            - ✅ Abreviaciones expandidas
+            - ✅ Caracteres especiales limpiados
             
             **🔄 La tabla se actualizará automáticamente...**
             """)
@@ -4952,8 +5488,141 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
         st.code(traceback.format_exc())
         return False
 
+# ========================================
+# FUNCIÓN ADICIONAL: LIMPIAR DATOS ANTES DE VALIDAR
+# ========================================
+
+def preparar_dataframe_para_validacion(df):
+    """
+    Prepara el DataFrame limpiando valores problemáticos antes de la validación
+    NUEVA FUNCIÓN - AGREGAR AL SISTEMA
+    """
+    
+    df_limpio = df.copy()
+    
+    for columna in df_limpio.columns:
+        # Reemplazar valores problemáticos por cadenas vacías
+        df_limpio[columna] = df_limpio[columna].astype(str)
+        
+        # Limpiar valores que representan "vacío"
+        df_limpio[columna] = df_limpio[columna].replace({
+            'nan': '',
+            'NaN': '',
+            'None': '',
+            'null': '',
+            'NULL': '',
+            'NA': '',
+            ' ': '',  # Solo espacios
+            'NaT': ''  # Not a Time
+        })
+        
+        # Limpiar espacios al inicio y final
+        df_limpio[columna] = df_limpio[columna].str.strip()
+    
+    return df_limpio
 
 
+# ========================================
+# FUNCIÓN MEJORADA: MOSTRAR ESTRUCTURA CON INFORMACIÓN DE CAMPOS OPCIONALES
+# ========================================
+
+def mostrar_estructura_esperada_mejorada_ACTUALIZADA(tipo_catalogo):
+    """
+    Mostrar estructura esperada con información sobre campos opcionales
+    REEMPLAZAR LA FUNCIÓN EXISTENTE
+    """
+    
+    if tipo_catalogo in ESQUEMAS_AS400:
+        st.markdown(f"#### 📋 Estructura Esperada para {tipo_catalogo}:")
+        
+        esquema = ESQUEMAS_AS400[tipo_catalogo]
+        
+        # Identificar campo principal (descripción)
+        CAMPO_PRINCIPAL = {
+            'ESTADOS': 'STADES',
+            'CIUDADES': 'CTYDES', 
+            'MUNICIPIOS': 'MPIDES',
+            'ALCALDIAS': 'DLGDES',
+            'COLONIAS': 'SDADES'
+        }
+        
+        # Identificar campos que pueden estar vacíos
+        CAMPOS_OPCIONALES = {
+            'ESTADOS': ['STASTS'],
+            'CIUDADES': ['CTYSTS'],
+            'MUNICIPIOS': ['MPISTS'],
+            'ALCALDIAS': ['DLGSTS'],
+            'COLONIAS': ['SDASTS']
+        }
+        
+        campo_principal = CAMPO_PRINCIPAL.get(tipo_catalogo)
+        campos_opcionales = CAMPOS_OPCIONALES.get(tipo_catalogo, [])
+        
+        estructura_data = []
+        for campo, info in esquema.items():
+            es_principal = campo == campo_principal
+            es_opcional = campo in campos_opcionales
+            
+            # Determinar obligatoriedad
+            if es_principal:
+                obligatorio = '✅ REQUERIDO'
+            elif es_opcional:
+                obligatorio = '⚪ OPCIONAL'
+            else:
+                obligatorio = '✅ REQUERIDO'
+            
+            estructura_data.append({
+                'Campo': campo,
+                'Tipo': info['tipo'],
+                'Longitud': info['longitud'],
+                'Descripción': info['descripcion'],
+                'Es Principal': '🎯 SÍ' if es_principal else 'No',
+                'Obligatorio': obligatorio
+            })
+        
+        estructura_df = pd.DataFrame(estructura_data)
+        st.dataframe(estructura_df, use_container_width=True, hide_index=True)
+        
+        # INFORMACIÓN IMPORTANTE SOBRE CAMPOS VACÍOS
+        st.info(f"""
+        **ℹ️ Información importante sobre campos vacíos:**
+        
+        **✅ Campos que PUEDEN estar vacíos:**
+        {', '.join(campos_opcionales) if campos_opcionales else 'Ninguno definido'}
+        
+        **🎯 Campo PRINCIPAL (debe tener datos):**
+        {campo_principal} - Máximo 10% de registros pueden estar vacíos
+        
+        **📝 Nota:** Los campos de Status generalmente pueden estar vacíos o contener 'A' (Activo), 'I' (Inactivo), etc.
+        """)
+        
+        # Mostrar ejemplo de datos
+        ejemplos = {
+            'ESTADOS': """STASTS,STASAB,STADES
+,01,AGUASCALIENTES
+A,02,BAJA CALIFORNIA
+,03,BAJA CALIFORNIA SUR""",
+            'CIUDADES': """CTYSTS,CTYCAB,CTYDES
+,001,AGUASCALIENTES
+A,002,MEXICALI
+,003,TIJUANA""",
+            'MUNICIPIOS': """MPISTS,MPICVE,MPIDES
+,001,AGUASCALIENTES
+A,002,ASIENTOS
+,003,CALVILLO""",
+            'ALCALDIAS': """DLGSTS,DLGCVE,DLGDES
+,001,ALVARO OBREGON
+A,002,AZCAPOTZALCO
+,003,BENITO JUAREZ""",
+            'COLONIAS': """SDASTS,SDASDA,SDADES
+,00001,CENTRO
+A,00002,DOCTORES
+,00003,OBRERA"""
+        }
+        
+        if tipo_catalogo in ejemplos:
+            st.markdown("**Ejemplo de datos correctos (nota los campos de Status vacíos):**")
+            st.code(ejemplos[tipo_catalogo], language="csv")
 
 
 # ========================================
