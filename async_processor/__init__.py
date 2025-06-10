@@ -1,0 +1,3 @@
+"""
+Sistema Asíncrono de Normalización
+"""

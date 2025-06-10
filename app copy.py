@@ -24,19 +24,6 @@ import re
 from fuzzywuzzy import fuzz, process
 import unicodedata
 
-
-import os
-from dotenv import load_dotenv
-from urllib.parse import urlparse
-
-# Cargar variables de entorno
-load_dotenv()
-
-# Detectar ambiente
-IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
-IS_LOCAL = not IS_RAILWAY
-
-
 # ========================================
 # SISTEMA COMPLETO DE LOGIN Y AUTENTICACIÓN
 # AGREGAR AL INICIO DEL ARCHIVO (después de los imports)
@@ -45,6 +32,36 @@ IS_LOCAL = not IS_RAILWAY
 import hashlib
 import secrets
 from datetime import datetime, timedelta
+
+
+# AGREGAR ESTOS IMPORTS AL INICIO (después de los imports existentes)
+import os
+from dotenv import load_dotenv
+from urllib.parse import urlparse
+
+import time
+import json
+from datetime import datetime, timedelta
+from threading import Lock
+import sys
+
+# ========================================
+# CACHE PERSISTENTE ENTRE SESIONES
+# ========================================
+
+import pickle
+import os
+from pathlib import Path
+
+# Cargar variables de entorno (solo si existe .env)
+try:
+    load_dotenv()
+except:
+    pass
+
+# DETECCIÓN AUTOMÁTICA DE AMBIENTE
+IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
+IS_LOCAL = not IS_RAILWAY
 
 # ========================================
 # 1. TABLA DE USUARIOS - AGREGAR A crear_tablas_sistema()
@@ -289,7 +306,7 @@ class GestorUsuarios:
             return None
     
     def cerrar_sesion(self, token):
-        """Cerrar sesión"""
+        """Cerrar sesión en la clase GestorUsuarios - MÉTODO DE LA CLASE"""
         try:
             with self.engine.connect() as conn:
                 conn.execute(text("""
@@ -304,6 +321,7 @@ class GestorUsuarios:
         except Exception as e:
             print(f"Error cerrando sesión: {e}")
             return False
+
     
     def listar_usuarios(self):
         """Listar todos los usuarios"""
@@ -488,21 +506,21 @@ def verificar_autenticacion():
     
     return st.session_state.usuario_autenticado
 
-def cerrar_sesion():
-    """Cerrar sesión del usuario"""
+# def cerrar_sesion():
+#     """Cerrar sesión del usuario"""
     
-    if 'token_sesion' in st.session_state:
-        gestor = st.session_state.gestor_usuarios
-        gestor.cerrar_sesion(st.session_state.token_sesion)
+#     if 'token_sesion' in st.session_state:
+#         gestor = st.session_state.gestor_usuarios
+#         gestor.cerrar_sesion(st.session_state.token_sesion)
     
-    # Limpiar session_state
-    st.session_state.usuario_autenticado = False
-    if 'usuario_actual' in st.session_state:
-        del st.session_state.usuario_actual
-    if 'token_sesion' in st.session_state:
-        del st.session_state.token_sesion
+#     # Limpiar session_state
+#     st.session_state.usuario_autenticado = False
+#     if 'usuario_actual' in st.session_state:
+#         del st.session_state.usuario_actual
+#     if 'token_sesion' in st.session_state:
+#         del st.session_state.token_sesion
     
-    st.rerun()
+#     st.rerun()
 
 def es_superusuario():
     """Verificar si el usuario actual es superusuario"""
@@ -529,7 +547,7 @@ def mostrar_barra_usuario():
         
         with col3:
             if st.button("🚪 Salir", key="logout"):
-                cerrar_sesion()
+                cerrar_sesion_PRESERVANDO_CACHE()
 
 # ========================================
 # 4. GESTIÓN DE USUARIOS (SOLO SUPERUSUARIOS)
@@ -675,6 +693,9 @@ def main_con_autenticacion():
 def main_aplicacion_original():
     """Tu función main() original - RENOMBRAR tu main() actual a esto"""
     
+    #inicializar_cache_simplificado()
+    inicializar_cache_hibrido()
+
     # Aplicar estilos CSS
     st.markdown(f"""
     <style>
@@ -755,22 +776,6 @@ def main_aplicacion_original():
 # ========================================
 # DICCIONARIOS DE CONOCIMIENTO (AGREGAR AL INICIO DEL ARCHIVO)
 # ========================================
-
-# Configuración adaptativa de base de datos
-if IS_RAILWAY:
-    # En Railway: usar DATABASE_URL
-    DATABASE_URL = os.getenv('DATABASE_URL')
-    # Railway da la URL completa, la parseamos después
-    DATABASE_CONFIG = {'url': DATABASE_URL}
-else:
-    # Local: usar configuración original
-    DATABASE_CONFIG = {
-        'host': os.getenv('DB_HOST', 'localhost'),
-        'port': int(os.getenv('DB_PORT', 5432)),
-        'database': os.getenv('DB_NAME', 'normalizacion_domicilios'),
-        'user': os.getenv('DB_USER', 'postgres'),
-        'password': os.getenv('DB_PASSWORD', 'admin123')
-    }
 
 # Diccionario de abreviaciones comunes en México
 ABREVIACIONES_MEXICO = {
@@ -902,7 +907,52 @@ PATRONES_LIMPIEZA_MEXICO = [
 # 1. CONFIGURACIÓN AVANZADA
 # ========================================
 
+#RRV01 ATABASE_CONFIG = {
+#    'host': 'localhost',
+#    'port': 5432,
+#    'database': 'normalizacion_domicilios',
+#    'user': 'postgres',
+#    'password': 'admin123'
+#}
 
+#RRV01
+def get_database_config():
+    """Configuración de BD que funciona en ambos ambientes"""
+    
+    if IS_RAILWAY:
+        # CONFIGURACIÓN PARA RAILWAY
+        if 'DATABASE_URL' in os.environ:
+            database_url = os.environ['DATABASE_URL']
+            parsed = urlparse(database_url)
+            
+            return {
+                'host': parsed.hostname,
+                'port': parsed.port or 5432,
+                'database': parsed.path[1:],
+                'user': parsed.username,
+                'password': parsed.password
+            }
+        else:
+            # Variables manuales en Railway
+            return {
+                'host': os.environ['DB_HOST'],
+                'port': int(os.environ.get('DB_PORT', 5432)),
+                'database': os.environ['DB_NAME'],
+                'user': os.environ['DB_USER'],
+                'password': os.environ['DB_PASSWORD']
+            }
+    else:
+        # CONFIGURACIÓN LOCAL
+        return {
+            'host': os.getenv('LOCAL_DB_HOST', 'localhost'),
+            'port': int(os.getenv('LOCAL_DB_PORT', 5432)),
+            'database': os.getenv('LOCAL_DB_NAME', 'normalizacion_domicilios'),
+            'user': os.getenv('LOCAL_DB_USER', 'postgres'),
+            'password': os.getenv('LOCAL_DB_PASSWORD', 'admin123')
+        }
+
+# APLICAR LA CONFIGURACIÓN
+DATABASE_CONFIG = get_database_config()
 
 # Configuración de página
 st.set_page_config(
@@ -988,20 +1038,48 @@ class SistemaNormalizacion:
         self.inicializar_patrones_limpieza()
         
     def crear_conexion(self):
-        """Crear conexión a PostgreSQL"""
+        """Crear conexión con mensajes temporales"""
         try:
-            if IS_RAILWAY and 'url' in DATABASE_CONFIG:
-                # En Railway: usar URL directa
-                engine = create_engine(DATABASE_CONFIG['url'])
+            connection_url = f"postgresql://{DATABASE_CONFIG['user']}:{DATABASE_CONFIG['password']}@{DATABASE_CONFIG['host']}:{DATABASE_CONFIG['port']}/{DATABASE_CONFIG['database']}"
+            
+            if IS_RAILWAY:
+                engine = create_engine(connection_url, pool_size=3, max_overflow=5, pool_timeout=20, pool_recycle=1800, connect_args={'sslmode': 'require', 'connect_timeout': 10, 'application_name': 'TelmexNormalizacion-Railway'})
             else:
-                # Local: usar configuración tradicional
-                config = DATABASE_CONFIG
-                connection_string = f"postgresql://{config['user']}:{config['password']}@{config['host']}:{config['port']}/{config['database']}"
-                engine = create_engine(connection_string)
+                engine = create_engine(connection_url, pool_size=5, max_overflow=10, pool_timeout=30, pool_recycle=3600, connect_args={'sslmode': 'prefer', 'connect_timeout': 5, 'application_name': 'TelmexNormalizacion-Local'})
+            
+            # Probar conexión
+            with engine.connect() as conn:
+                result = conn.execute(text("SELECT version()"))
+                version = result.fetchone()[0]
+            
+            # ===== MENSAJES TEMPORALES =====
+            if 'mensajes_mostrados' not in st.session_state:
+                st.session_state.mensajes_mostrados = False
+            
+            if not st.session_state.mensajes_mostrados:
+                # Mostrar mensajes
+                st.success("✅ 🚂 Conexión Railway establecida" if IS_RAILWAY else "✅ 🏠 Conexión Local establecida")
+                
+                if IS_LOCAL:
+                    version_corta = version.split(',')[0]
+                    st.info(f"🗄️ PostgreSQL: {version_corta}")
+                
+                st.success("✅ Sistema de tablas inicializado correctamente")
+                
+                # Marcar como mostrados
+                st.session_state.mensajes_mostrados = True
+                
+                # Auto-limpiar después de 3 segundos
+                time.sleep(5)
+                st.rerun()
             
             return engine
+            
         except Exception as e:
-            st.error(f"Error de conexión: {e}")
+            if IS_RAILWAY:
+                st.error(f"❌ 🚂 Error conexión Railway: {str(e)}")
+            else:
+                st.error(f"❌ 🏠 Error conexión Local: {str(e)}")
             return None
     
     def crear_tablas_sistema(self):
@@ -1097,7 +1175,10 @@ class SistemaNormalizacion:
             st.error(f"Error creando tablas: {e}")
     
     def validar_estructura_archivo(self, df, tipo_catalogo):
-        """Validar que el archivo tenga la estructura correcta de AS400 - CORREGIDA"""
+        """
+        Validar que el archivo tenga la estructura correcta de AS400 - PERMITE CAMPOS VACÍOS
+        REEMPLAZAR EL MÉTODO EXISTENTE validar_estructura_archivo() POR ESTE
+        """
         
         if tipo_catalogo not in ESQUEMAS_AS400:
             return False, f"Tipo de catálogo no válido: {tipo_catalogo}"
@@ -1115,20 +1196,38 @@ class SistemaNormalizacion:
         if len(df) == 0:
             return False, "❌ El archivo está vacío"
         
-        # Verificar longitudes
+        # VALIDACIÓN DE LONGITUDES CORREGIDA - PERMITE VACÍOS
         errores_longitud = []
+        
         for columna, config in esquema.items():
             if columna in df.columns:
-                # Convertir a string y calcular longitud máxima
+                # CRÍTICO: Limpiar y manejar valores vacíos correctamente
                 df[columna] = df[columna].astype(str)
-                max_length = df[columna].str.len().max()
-                if max_length > config['longitud']:
-                    errores_longitud.append(f"❌ {columna}: longitud máxima {max_length} > esperado {config['longitud']}")
+                
+                # NUEVA LÓGICA: Solo validar registros que NO estén vacíos
+                registros_con_datos = df[columna][
+                    (df[columna] != 'nan') & 
+                    (df[columna] != '') & 
+                    (df[columna].notna()) &
+                    (df[columna] != 'None')
+                ]
+                
+                if len(registros_con_datos) > 0:
+                    max_length = registros_con_datos.str.len().max()
+                    
+                    if max_length > config['longitud']:
+                        # Contar cuántos registros exceden la longitud
+                        registros_largos = (registros_con_datos.str.len() > config['longitud']).sum()
+                        
+                        errores_longitud.append(
+                            f"❌ {columna}: {registros_largos} registros exceden longitud máxima "
+                            f"(encontrado: {max_length}, esperado: {config['longitud']})"
+                        )
         
         if errores_longitud:
             return False, f"Errores de longitud:\n" + "\n".join(errores_longitud)
         
-        # Verificar que el campo de descripción tenga datos
+        # VERIFICACIÓN DEL CAMPO DESCRIPCIÓN - TAMBIÉN CORREGIDA
         CAMPO_DESCRIPCION_MAP = {
             'ESTADOS': 'STADES',
             'CIUDADES': 'CTYDES', 
@@ -1139,17 +1238,39 @@ class SistemaNormalizacion:
         
         campo_desc = CAMPO_DESCRIPCION_MAP.get(tipo_catalogo)
         if campo_desc and campo_desc in df.columns:
-            registros_vacios = df[campo_desc].isna().sum() + (df[campo_desc] == '').sum()
-            if registros_vacios > 0:
-                return False, f"⚠️ {registros_vacios} registros tienen campo de descripción vacío en {campo_desc}"
+            # Solo validar que el campo de descripción tenga algunos datos
+            registros_vacios_desc = df[campo_desc][
+                (df[campo_desc] == 'nan') | 
+                (df[campo_desc] == '') | 
+                (df[campo_desc].isna()) |
+                (df[campo_desc] == 'None')
+            ]
+            
+            porcentaje_vacios = len(registros_vacios_desc) / len(df) * 100
+            
+            # Permitir hasta 10% de registros vacíos en descripción
+            if porcentaje_vacios > 10:
+                return False, f"⚠️ {len(registros_vacios_desc)} registros ({porcentaje_vacios:.1f}%) tienen campo de descripción vacío en {campo_desc}. Máximo permitido: 10%"
+            elif porcentaje_vacios > 0:
+                # Solo advertencia si hay pocos vacíos
+                print(f"⚠️ Advertencia: {len(registros_vacios_desc)} registros con {campo_desc} vacío ({porcentaje_vacios:.1f}%)")
         
         return True, f"✅ Estructura válida: {len(df)} registros, {len(columnas_archivo)} columnas"
-    
+
+
+
     def procesar_archivo_cargado(self, df, tipo_catalogo, division, nombre_archivo):
-        """Procesar un archivo cargado y normalizarlo - CORREGIDO"""
+        """
+        Procesar un archivo cargado y normalizarlo - CON LIMPIEZA PREVIA
+        REEMPLAZAR EL MÉTODO EXISTENTE EN LA CLASE SistemaNormalizacion
+        """
         
-        # Validar estructura
-        valido, mensaje = self.validar_estructura_archivo(df, tipo_catalogo)
+        # PASO 1: LIMPIAR DataFrame antes de validar
+        print(f"🧹 Limpiando DataFrame antes de validación...")
+        df_limpio = preparar_dataframe_para_validacion(df)
+        
+        # PASO 2: Validar estructura con DataFrame limpio
+        valido, mensaje = self.validar_estructura_archivo(df_limpio, tipo_catalogo)
         if not valido:
             return False, mensaje
         
@@ -1167,11 +1288,11 @@ class SistemaNormalizacion:
                     'nombre': nombre_archivo,
                     'tipo': tipo_catalogo,
                     'division': division,
-                    'total': len(df)
+                    'total': len(df_limpio)  # Usar DataFrame limpio
                 })
                 conn.commit()
             
-            # Procesar registros
+            # PASO 3: Procesar registros con DataFrame limpio
             resultados = []
             esquema = ESQUEMAS_AS400[tipo_catalogo]
             
@@ -1186,7 +1307,7 @@ class SistemaNormalizacion:
             
             campo_descripcion = CAMPO_DESCRIPCION_MAP.get(tipo_catalogo)
             
-            if not campo_descripcion or campo_descripcion not in df.columns:
+            if not campo_descripcion or campo_descripcion not in df_limpio.columns:
                 return False, f"Campo de descripción '{campo_descripcion}' no encontrado para {tipo_catalogo}"
             
             # CORRECCIÓN: Mapeo de campos de status y clave
@@ -1209,14 +1330,14 @@ class SistemaNormalizacion:
             campo_status = CAMPO_STATUS_MAP.get(tipo_catalogo)
             campo_clave = CAMPO_CLAVE_MAP.get(tipo_catalogo)
             
-            # Procesar cada registro
-            for idx, row in df.iterrows():
+            # Procesar cada registro del DataFrame limpio
+            for idx, row in df_limpio.iterrows():
                 resultado = self.normalizar_registro(
                     texto_original=str(row[campo_descripcion]),
                     tipo_catalogo=tipo_catalogo,
                     division=division,
-                    campo_status=str(row.get(campo_status, '')),
-                    campo_clave=str(row.get(campo_clave, '')),
+                    campo_status=str(row.get(campo_status, '')),  # Manejo de vacíos
+                    campo_clave=str(row.get(campo_clave, '')),    # Manejo de vacíos
                     campo_descripcion=str(row[campo_descripcion])
                 )
                 
@@ -1225,7 +1346,7 @@ class SistemaNormalizacion:
                 
                 # Actualizar progreso cada 100 registros
                 if (idx + 1) % 100 == 0:
-                    progreso = (idx + 1) / len(df) * 100
+                    progreso = (idx + 1) / len(df_limpio) * 100
                     self.actualizar_progreso_archivo(id_archivo, progreso)
             
             # Guardar resultados en BD
@@ -1240,10 +1361,15 @@ class SistemaNormalizacion:
                 """), {'id_archivo': id_archivo})
                 conn.commit()
             
-            return True, f"Procesados {len(resultados)} registros correctamente"
+            return True, f"Procesados {len(resultados)} registros correctamente (con limpieza previa)"
             
         except Exception as e:
             return False, f"Error procesando archivo: {str(e)}"
+
+
+
+
+
     
     def normalizar_registro(self, texto_original, tipo_catalogo, division, campo_status, campo_clave, campo_descripcion):
         """Normalizar un registro individual usando los algoritmos de IA"""
@@ -1252,8 +1378,9 @@ class SistemaNormalizacion:
         texto_limpio = self.limpiar_texto_inteligente(texto_original, tipo_catalogo)
         
         # Buscar en referencias
-        referencia_encontrada = self.buscar_en_referencias_CORREGIDO(texto_limpio, tipo_catalogo)
-        
+        #referencia_encontrada = self.buscar_en_referencias_CORREGIDO(texto_limpio, tipo_catalogo)
+        referencia_encontrada = self.buscar_en_referencias_CACHE_SIMPLE(texto_limpio, tipo_catalogo)
+    
         resultado = {
             'tipo_catalogo': tipo_catalogo,
             'division': division,
@@ -1646,6 +1773,62 @@ class SistemaNormalizacion:
                 print(f"   ⚠️ Error compilando patrón '{patron}': {e}")
         
 
+    # ========================================
+    # 3. BÚSQUEDA CON CACHE SIMPLIFICADO
+    # ========================================
+
+    def buscar_en_referencias_CACHE_SIMPLE(self, texto_limpio, tipo_catalogo):
+        """Búsqueda con cache persistente"""
+    
+        print(f"🔍 Buscando con cache persistente: '{texto_limpio}' en {tipo_catalogo}")
+        
+        try:
+            # Obtener cache persistente
+            cache = inicializar_cache_hibrido()
+            
+            # Obtener referencias (con cache persistente o desde BD)
+            referencias = cache.get_referencias(tipo_catalogo, self.engine)
+            
+            if not referencias:
+                print(f"   ❌ No hay referencias para {tipo_catalogo}")
+                return None
+            
+            print(f"   📊 Procesando {len(referencias)} referencias")
+            
+            # Búsqueda exacta
+            for ref in referencias:
+                nombre_ref = ref['nombre_oficial'].upper().strip()
+                if texto_limpio == nombre_ref:
+                    print(f"   ✅ EXACTO: '{texto_limpio}'")
+                    return {
+                        **ref,
+                        'metodo': 'EXACTO',
+                        'confianza': 1.0
+                    }
+            
+            # Fuzzy matching
+            nombres = [ref['nombre_oficial'].upper().strip() for ref in referencias]
+            
+            from fuzzywuzzy import fuzz, process
+            mejor = process.extractOne(texto_limpio, nombres, scorer=fuzz.token_sort_ratio)
+            
+            if mejor and mejor[1] >= 60:
+                for ref in referencias:
+                    if ref['nombre_oficial'].upper().strip() == mejor[0]:
+                        print(f"   ✅ FUZZY: '{texto_limpio}' → '{mejor[0]}' ({mejor[1]}%)")
+                        return {
+                            **ref,
+                            'metodo': 'FUZZY_ALTO' if mejor[1] >= 80 else 'FUZZY_BAJO',
+                            'confianza': mejor[1] / 100.0
+                        }
+            
+            print(f"   ❌ Sin coincidencias para '{texto_limpio}'")
+            return None
+            
+        except Exception as e:
+            print(f"   ❌ Error en búsqueda persistente: {e}")
+            # Fallback a búsqueda directa
+            return self.buscar_fallback_directo(texto_limpio, tipo_catalogo)
 
 
 
@@ -1927,7 +2110,8 @@ def mostrar_carga_archivos_datos():
     
     # MOSTRAR ESTRUCTURA ESPERADA SOLO SI TIPO ES VÁLIDO
     if tipo_valido:
-        mostrar_estructura_esperada_mejorada(tipo_catalogo)
+        #mostrar_estructura_esperada_mejorada(tipo_catalogo)
+        mostrar_estructura_esperada_mejorada_ACTUALIZADA(tipo_catalogo)
     
     # CONTROL DE FILE UPLOADER BASADO EN AMBAS SELECCIONES
     st.markdown("#### 📤 Subir Archivos:")
@@ -2088,7 +2272,7 @@ def mostrar_carga_archivos_datos():
         ---
         
         **⚠️ Notas importantes:**
-        - Los archivos deben estar en formato CSV
+        - Los archivos deben estar en formato CSV UTF-8
         - La primera fila debe contener los nombres de las columnas
         - Verifica que los datos coincidan con la estructura AS400
         """)
@@ -2274,7 +2458,13 @@ def mostrar_carga_referencias():
                 if st.button("🚀 CARGAR REFERENCIAS", type="primary", use_container_width=True):
                     
                     # Ejecutar carga
-                    success = cargar_referencias_con_actualizacion_automatica(
+                    # success = cargar_referencias_con_actualizacion_automatica(
+                    #     df_ref, tipo_ref, fuente_ref, archivo_referencia.name
+                    # )
+                    # success = cargar_referencias_con_cache_ACTUALIZADO(
+                    #     df_ref, tipo_ref, fuente_ref, archivo_referencia.name
+                    # )
+                    success = cargar_referencias_CACHE_SIMPLE(
                         df_ref, tipo_ref, fuente_ref, archivo_referencia.name
                     )
                     
@@ -2335,7 +2525,7 @@ def mostrar_carga_referencias():
         ---
         
         **⚠️ Notas importantes:**
-        - El archivo debe estar en formato CSV
+        - El archivo debe estar en formato CSV UTF-8
         - La primera fila debe contener los nombres de las columnas
         - Los datos nuevos **reemplazarán** las referencias existentes del mismo tipo
         """)
@@ -2354,8 +2544,9 @@ def mostrar_carga_referencias():
 
 def mostrar_referencias_actuales():
     """
-    Mostrar las referencias actuales en el sistema - VERSIÓN MEJORADA
-    REEMPLAZAR la función mostrar_referencias_actuales() existente por esta
+    REEMPLAZAR mostrar_referencias_actuales() por esta versión
+    
+    Mostrar las referencias actuales en el sistema - VERSIÓN CORREGIDA
     """
     
     sistema = SistemaNormalizacion()
@@ -2375,10 +2566,19 @@ def mostrar_referencias_actuales():
                     ORDER BY tipo_catalogo
                 """))
                 
-                # CORRECCIÓN: Manejar resultados vacíos
+                # CONVERSIÓN SEGURA
                 referencias = []
                 for row in result:
-                    referencias.append(dict(row._mapping))
+                    try:
+                        # Método manual seguro
+                        referencias.append({
+                            'tipo_catalogo': row[0],
+                            'total_referencias': row[1],
+                            'ultima_actualizacion': row[2]
+                        })
+                    except Exception as e:
+                        print(f"⚠️ Error en referencia actual: {e}")
+                        continue
             
             if referencias:
                 st.markdown("#### 📋 Referencias Actuales:")
@@ -2387,9 +2587,13 @@ def mostrar_referencias_actuales():
                 df_referencias.columns = ['Tipo', 'Total Referencias', 'Última Actualización']
                 
                 # Formatear fecha para mejor legibilidad
-                df_referencias['Última Actualización'] = pd.to_datetime(
-                    df_referencias['Última Actualización']
-                ).dt.strftime('%Y-%m-%d %H:%M:%S')
+                if 'Última Actualización' in df_referencias.columns:
+                    try:
+                        df_referencias['Última Actualización'] = pd.to_datetime(
+                            df_referencias['Última Actualización']
+                        ).dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except:
+                        pass  # Si falla el formateo, dejar como está
                 
                 st.dataframe(df_referencias, use_container_width=True, hide_index=True)
                 
@@ -2406,66 +2610,142 @@ def mostrar_referencias_actuales():
                 
                 with col3:
                     # Fecha más reciente
-                    fecha_mas_reciente = pd.to_datetime(
-                        df_referencias['Última Actualización']
-                    ).max().strftime('%Y-%m-%d')
-                    st.metric("Última Carga", fecha_mas_reciente)
+                    try:
+                        if 'Última Actualización' in df_referencias.columns:
+                            fecha_mas_reciente = pd.to_datetime(
+                                df_referencias['Última Actualización']
+                            ).max().strftime('%Y-%m-%d')
+                            st.metric("Última Carga", fecha_mas_reciente)
+                        else:
+                            st.metric("Última Carga", "N/A")
+                    except:
+                        st.metric("Última Carga", "N/A")
                 
             else:
                 st.info("📝 No hay referencias cargadas en el sistema. Sube archivos de referencia SEPOMEX/INEGI para mejorar la precisión.")
         
         except Exception as e:
             st.error(f"Error consultando referencias: {str(e)}")
+            
+            # Información de ayuda
+            st.markdown("### 🔧 Información del Error:")
+            st.code(f"""
+Error específico: {str(e)}
+
+Posibles causas:
+1. Problema de conversión SQLAlchemy 
+2. Tabla referencias_normalizacion no existe
+3. Permisos de base de datos
+
+Solución aplicada: Conversión manual de filas
+            """)
 
 # ========================================
 # CORRECCIÓN PARA ERROR EN PROCESAMIENTO TIEMPO REAL
 # ========================================
 
 def mostrar_procesamiento_tiempo_real():
-    """Mostrar el progreso de procesamiento en tiempo real - SIN BOTÓN ELIMINAR"""
+    """Mostrar procesamiento con diagnóstico mejorado - FUNCIÓN CORREGIDA COMPLETA"""
     
     st.markdown("### ⚙️ Monitor de Procesamiento")
-
-
     
-    # Obtener archivos en procesamiento
+    # NUEVO: Botón de diagnóstico
+    # if st.button("🔍 DIAGNOSTICAR ARCHIVOS", type="secondary"):
+    #     sistema = SistemaNormalizacion()
+    #     diagnosticar_archivos_cargados(sistema)
+    #     return
+    
+    # Obtener archivos con RANGO DE FECHA CONFIGURABLE
     sistema = SistemaNormalizacion()
+    
+    # NUEVO: Selector de rango de tiempo
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        rango_tiempo = st.selectbox(
+            "📅 Mostrar archivos de los últimos:",
+            options=[
+                ("1 hora", 1/24),
+                ("6 horas", 6/24), 
+                ("24 horas", 1),
+                ("3 días", 3),
+                ("7 días", 7),
+                ("30 días", 30),
+                ("Todos los archivos", 9999)
+            ],
+            index=6,  # Por defecto "Todos los archivos"
+            format_func=lambda x: x[0]
+        )
+    
+    with col2:
+        if st.button("🔄 Actualizar", type="primary"):
+            st.rerun()
+    
+    dias_limite = rango_tiempo[1]
     
     try:
         with sistema.engine.connect() as conn:
-            result = conn.execute(text("""
-                SELECT a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division,
-                       a.total_registros, a.fecha_carga, a.estado_procesamiento,
-                       COALESCE(r.procesados, 0) as registros_procesados
-                FROM archivos_cargados a
-                LEFT JOIN (
-                    SELECT id_archivo, COUNT(*) as procesados
-                    FROM resultados_normalizacion
-                    GROUP BY id_archivo
-                ) r ON a.id_archivo = r.id_archivo
-                WHERE a.fecha_carga >= CURRENT_DATE - INTERVAL '1 day'
-                ORDER BY a.fecha_carga DESC
-            """))
             
-            # CORRECCIÓN: Manejar resultados correctamente
+            if dias_limite >= 9999:
+                # Mostrar todos los archivos
+                result = conn.execute(text("""
+                    SELECT a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division,
+                           a.total_registros, a.fecha_carga, a.estado_procesamiento,
+                           COALESCE(r.procesados, 0) as registros_procesados
+                    FROM archivos_cargados a
+                    LEFT JOIN (
+                        SELECT id_archivo, COUNT(*) as procesados
+                        FROM resultados_normalizacion
+                        GROUP BY id_archivo
+                    ) r ON a.id_archivo = r.id_archivo
+                    ORDER BY a.fecha_carga DESC
+                """))
+            else:
+                # Mostrar archivos del rango seleccionado
+                fecha_limite = datetime.now() - timedelta(days=dias_limite)
+                
+                result = conn.execute(text("""
+                    SELECT a.id_archivo, a.nombre_archivo, a.tipo_catalogo, a.division,
+                           a.total_registros, a.fecha_carga, a.estado_procesamiento,
+                           COALESCE(r.procesados, 0) as registros_procesados
+                    FROM archivos_cargados a
+                    LEFT JOIN (
+                        SELECT id_archivo, COUNT(*) as procesados
+                        FROM resultados_normalizacion
+                        GROUP BY id_archivo
+                    ) r ON a.id_archivo = r.id_archivo
+                    WHERE a.fecha_carga >= :fecha_limite
+                    ORDER BY a.fecha_carga DESC
+                """), {'fecha_limite': fecha_limite})
+            
             archivos = []
             for row in result:
                 if row is not None:
-                    archivos.append(dict(row._mapping))
+                    archivos.append({
+                        'id_archivo': row[0],
+                        'nombre_archivo': row[1],
+                        'tipo_catalogo': row[2],
+                        'division': row[3],
+                        'total_registros': row[4] or 0,
+                        'fecha_carga': row[5],
+                        'estado_procesamiento': row[6],
+                        'registros_procesados': row[7] or 0
+                    })
         
         if archivos:
-            st.markdown("#### 📊 Archivos Recientes:")
+            st.success(f"✅ Se encontraron {len(archivos)} archivos ({rango_tiempo[0]})")
             
+            # Mostrar archivos
             for archivo in archivos:
-                with st.expander(f"📄 {archivo['nombre_archivo']} - {archivo['estado_procesamiento']}"):
+                with st.expander(f"📄 {archivo['nombre_archivo']} - {archivo['estado_procesamiento']}", expanded=True):
                     col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
-                        total_reg = int(archivo['total_registros'] or 0)
+                        total_reg = int(archivo['total_registros'])
                         st.metric("Total Registros", f"{total_reg:,}")
                     
                     with col2:
-                        procesados = int(archivo['registros_procesados'] or 0)
+                        procesados = int(archivo['registros_procesados'])
                         st.metric("Procesados", f"{procesados:,}")
                     
                     with col3:
@@ -2481,7 +2761,7 @@ def mostrar_procesamiento_tiempo_real():
                     # Barra de progreso
                     if total_reg > 0:
                         progreso_pct = procesados / total_reg
-                        st.progress(min(progreso_pct, 1.0))  # Asegurar que no exceda 1.0
+                        st.progress(min(progreso_pct, 1.0))
                     else:
                         st.progress(0.0)
                     
@@ -2490,9 +2770,10 @@ def mostrar_procesamiento_tiempo_real():
                     with col1:
                         st.info(f"**Tipo:** {archivo['tipo_catalogo']}")
                     with col2:
-                        st.info(f"**Cargado:** {archivo['fecha_carga']}")
+                        fecha_formateada = archivo['fecha_carga'].strftime('%Y-%m-%d %H:%M:%S')
+                        st.info(f"**Cargado:** {fecha_formateada}")
                     
-                    # BOTONES AJUSTADOS - SIN ELIMINAR (2 columnas en lugar de 3)
+                    # Botones de acción
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -2502,102 +2783,41 @@ def mostrar_procesamiento_tiempo_real():
                     with col2:
                         if st.button(f"📥 Descargar", key=f"desc_{archivo['id_archivo']}", use_container_width=True):
                             descargar_resultados_archivo(archivo['id_archivo'])
-                    
-                    # INFORMACIÓN ADICIONAL EN LUGAR DEL BOTÓN ELIMINAR
-                    if archivo['estado_procesamiento'] == 'COMPLETADO':
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            # Calcular tasa de éxito
-                            if procesados > 0:
-                                # Obtener estadísticas del archivo
-                                try:
-                                    with sistema.engine.connect() as conn_stats:
-                                        result_stats = conn_stats.execute(text("""
-                                            SELECT 
-                                                COUNT(CASE WHEN valor_normalizado IS NOT NULL THEN 1 END) as exitosos,
-                                                COALESCE(AVG(CASE WHEN confianza > 0 THEN confianza END), 0) as confianza_prom
-                                            FROM resultados_normalizacion 
-                                            WHERE id_archivo = :id_archivo
-                                        """), {'id_archivo': archivo['id_archivo']})
-                                        
-                                        stats_row = result_stats.fetchone()
-                                        if stats_row:
-                                            exitosos = int(stats_row[0] or 0)
-                                            confianza_prom = float(stats_row[1] or 0)
-                                            tasa_exito = (exitosos / procesados * 100) if procesados > 0 else 0
-                                            
-                                            st.success(f"✅ **Éxito:** {tasa_exito:.1f}% ({exitosos:,}/{procesados:,})")
-                                        else:
-                                            st.info("ℹ️ **Estado:** Completado")
-                                except:
-                                    st.info("ℹ️ **Estado:** Completado")
-                            else:
-                                st.info("ℹ️ **Estado:** Completado")
-                        
-                        with col2:
-                            # Mostrar confianza promedio si está disponible
-                            try:
-                                with sistema.engine.connect() as conn_conf:
-                                    result_conf = conn_conf.execute(text("""
-                                        SELECT COALESCE(AVG(CASE WHEN confianza > 0 THEN confianza END), 0) as confianza_prom
-                                        FROM resultados_normalizacion 
-                                        WHERE id_archivo = :id_archivo
-                                    """), {'id_archivo': archivo['id_archivo']})
-                                    
-                                    conf_row = result_conf.fetchone()
-                                    if conf_row and conf_row[0] > 0:
-                                        confianza = float(conf_row[0]) * 100
-                                        st.info(f"🎯 **Confianza:** {confianza:.1f}%")
-                                    else:
-                                        fecha_formato = pd.to_datetime(archivo['fecha_carga']).strftime('%d/%m/%Y %H:%M')
-                                        st.info(f"📅 **Procesado:** {fecha_formato}")
-                            except:
-                                fecha_formato = pd.to_datetime(archivo['fecha_carga']).strftime('%d/%m/%Y %H:%M')
-                                st.info(f"📅 **Procesado:** {fecha_formato}")
-                    
-                    else:
-                        # Para archivos en proceso
-                        st.info(f"⏳ **Estado:** {archivo['estado_procesamiento']}")
         
         else:
-            st.info("📋 No hay archivos procesados recientemente")
+            st.warning(f"⚠️ No hay archivos en el rango seleccionado ({rango_tiempo[0]})")
             
-            # Mostrar ayuda para usuarios nuevos
-            st.markdown("### 🚀 ¿Cómo empezar?")
+            # Mostrar ayuda
+            st.markdown("### 💡 ¿Qué puedes hacer?")
+            
             col1, col2 = st.columns(2)
             
             with col1:
                 st.markdown("""
-                **1. Sube archivos AS400:**
-                - Ve a la pestaña "Subir Archivos"
-                - Selecciona el tipo de catálogo
-                - Carga tu archivo CSV
+                **🔍 Diagnóstico:**
+                - Haz clic en "DIAGNOSTICAR ARCHIVOS"
+                - Cambia el rango de tiempo
+                - Verifica si el archivo se cargó correctamente
                 """)
             
             with col2:
                 st.markdown("""
-                **2. Configura referencias:**
-                - Sube archivos de referencia SEPOMEX/INEGI
-                - Mejora la precisión de normalización
-                - Ve resultados aquí en tiempo real
+                **📁 Carga de archivos:**
+                - Ve a "Carga de Archivos"
+                - Sube un archivo nuevo
+                - Verifica que se procese correctamente
                 """)
+            
+            # Botón directo para diagnóstico
+            if st.button("🔍 HACER DIAGNÓSTICO COMPLETO", type="primary"):
+                diagnosticar_archivos_cargados(sistema)
     
     except Exception as e:
         st.error(f"Error consultando procesamiento: {str(e)}")
         
-        # Mostrar información de debug en desarrollo
         if st.checkbox("🔧 Mostrar detalles técnicos"):
-            st.code(f"""
-Error: {str(e)}
-Tipo: {type(e).__name__}
-
-Posibles causas:
-1. Base de datos no inicializada
-2. Tablas no creadas
-3. Error de conexión
-4. Problema con SQLAlchemy version
-            """)
+            import traceback
+            st.code(traceback.format_exc())
 
 # ========================================
 # 6. FUNCIONES DE PROCESAMIENTO
@@ -2811,11 +3031,12 @@ def mostrar_configuracion_sistema():
     # Tabs diferentes según el rol
     if rol_usuario == 'SUPERUSUARIO':
         # SUPERUSUARIO: Ve todo
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "🗄️ Base de Datos", 
             "📚 Referencias", 
             "🧹 Mantenimiento", 
-            "📊 Estadísticas"
+            "📊 Estadísticas",
+            "⚡ Cache Inteligente"
         ])
         
         with tab1:
@@ -2829,6 +3050,12 @@ def mostrar_configuracion_sistema():
         
         with tab4:
             mostrar_estadisticas_sistema()
+
+        with tab5:
+            #mostrar_panel_cache_simple()     
+            mostrar_panel_cache_persistente()   
+
+        
     
     elif rol_usuario == 'GERENTE':
         # GERENTE: Sin parámetros técnicos
@@ -2862,7 +3089,7 @@ def mostrar_configuracion_sistema():
 # ========================================
 
 def mostrar_config_base_datos():
-    """Configuración de base de datos - CORREGIDA"""
+    """Configuración de base de datos - VERSIÓN CORREGIDA"""
     
     st.markdown("### 🗄️ Configuración de PostgreSQL")
     
@@ -2897,7 +3124,14 @@ def mostrar_config_base_datos():
                 tablas_stats = []
                 for row in result:
                     if row is not None:
-                        tablas_stats.append(dict(row._mapping))
+                        # Crear diccionario manualmente
+                        tablas_stats.append({
+                            'schemaname': row[0],
+                            'tablename': row[1],
+                            'inserts': row[2],
+                            'updates': row[3],
+                            'deletes': row[4]
+                        })
             
             # Mostrar información básica (todos pueden ver)
             st.info(f"**Versión PostgreSQL:** {version}")
@@ -2906,7 +3140,8 @@ def mostrar_config_base_datos():
                 st.markdown("#### 📊 Estadísticas de Tablas:")
                 
                 df_stats = pd.DataFrame(tablas_stats)
-                df_stats.columns = ['Esquema', 'Tabla', 'Inserts', 'Updates', 'Deletes']
+                df_stats = df_stats[['tablename', 'inserts', 'updates', 'deletes']].copy()
+                df_stats.columns = ['Tabla', 'Inserts', 'Updates', 'Deletes']
                 
                 st.dataframe(df_stats, use_container_width=True, hide_index=True)
             else:
@@ -2914,6 +3149,20 @@ def mostrar_config_base_datos():
             
         except Exception as e:
             st.error(f"Error obteniendo información de BD: {str(e)}")
+            
+            # Debug solo para administradores
+            if rol_usuario in ['SUPERUSUARIO', 'GERENTE']:
+                if st.checkbox("🔧 Mostrar detalles técnicos"):
+                    st.code(f"""
+Error: {str(e)}
+Tipo: {type(e).__name__}
+
+Consulta problemática: pg_stat_user_tables
+Posibles soluciones:
+1. Verificar permisos de usuario PostgreSQL
+2. Actualizar estadísticas: ANALYZE;
+3. Verificar que existan tablas en el esquema public
+                    """)
     
     else:
         st.error("❌ No hay conexión a PostgreSQL")
@@ -2922,19 +3171,22 @@ def mostrar_config_base_datos():
         st.markdown("### 🔧 Solución de Problemas:")
         st.markdown("""
         **Verifica la configuración:**
-        - Host: localhost
+        - Host: localhost (o Railway)
         - Puerto: 5432
         - Base de datos: normalizacion_domicilios
         - Usuario: postgres
-        - Contraseña: admin123
+        - Contraseña: [configurada]
         
-        **Comandos útiles:**
+        **Comandos útiles para desarrollo local:**
         ```bash
         # Verificar si PostgreSQL está corriendo
         sudo systemctl status postgresql
         
         # Crear base de datos
         createdb normalizacion_domicilios
+        
+        # Conectar manualmente
+        psql -h localhost -U postgres -d normalizacion_domicilios
         ```
         """)
     
@@ -2947,13 +3199,13 @@ def mostrar_config_base_datos():
         mostrar_mensaje_permisos_parametros(rol_usuario)
 
 def mostrar_gestion_referencias():
-    """Gestión completa de referencias"""
+    """Gestión completa de referencias - VERSIÓN CORREGIDA"""
     
     st.markdown("### 📚 Gestión de Referencias")
     
     sistema = SistemaNormalizacion()
     
-    # Resumen de referencias actuales
+    # Resumen de referencias actuales - CON MANEJO DE ERRORES
     try:
         with sistema.engine.connect() as conn:
             result = conn.execute(text("""
@@ -2968,7 +3220,25 @@ def mostrar_gestion_referencias():
                 ORDER BY tipo_catalogo
             """))
             
-            referencias_resumen = [dict(row) for row in result]
+            # CONVERSIÓN SEGURA DE ROWS
+            referencias_resumen = []
+            for row in result:
+                try:
+                    # Usar conversión segura
+                    row_dict = convertir_row_a_dict_seguro(row)
+                    referencias_resumen.append(row_dict)
+                except Exception as e:
+                    print(f"⚠️ Error convirtiendo row en gestión: {e}")
+                    # Crear manualmente si falla
+                    try:
+                        referencias_resumen.append({
+                            'tipo_catalogo': row[0],
+                            'total': row[1],
+                            'con_coordenadas': row[2],
+                            'ultima_actualizacion': row[3]
+                        })
+                    except:
+                        continue
     
         if referencias_resumen:
             st.markdown("#### 📊 Estado Actual de Referencias:")
@@ -2983,6 +3253,16 @@ def mostrar_gestion_referencias():
     
     except Exception as e:
         st.error(f"Error consultando referencias: {str(e)}")
+        
+        # Fallback - mostrar información básica
+        st.info("Intentando obtener información básica...")
+        try:
+            with sistema.engine.connect() as conn:
+                result = conn.execute(text("SELECT COUNT(*) FROM referencias_normalizacion"))
+                total_refs = result.fetchone()[0]
+                st.info(f"📊 Total de referencias en el sistema: {total_refs:,}")
+        except:
+            st.error("No se pudo conectar a la base de datos")
     
     st.markdown("---")
     
@@ -2993,75 +3273,255 @@ def mostrar_gestion_referencias():
     
     with col1:
         if st.button("🧹 Limpiar Referencias Duplicadas"):
-            limpiar_referencias_duplicadas(sistema)
+            limpiar_referencias_duplicadas_seguro(sistema)
     
     with col2:
         if st.button("📊 Validar Integridad"):
-            validar_integridad_referencias(sistema)
+            validar_integridad_referencias_seguro(sistema)
     
     with col3:
         if st.button("📥 Exportar Referencias"):
-            exportar_referencias(sistema)
+            exportar_referencias_seguro(sistema)
+            
 
-def mostrar_mantenimiento_sistema():
-    """Herramientas de mantenimiento del sistema"""
+# ========================================
+# FUNCIONES DE MANTENIMIENTO CORREGIDAS
+# ========================================
+
+def limpiar_referencias_duplicadas_seguro(sistema):
+    """Limpiar referencias duplicadas con manejo de errores"""
     
-    st.markdown("### 🧹 Mantenimiento del Sistema")
+    try:
+        with sistema.engine.connect() as conn:
+            # Contar duplicados primero
+            result = conn.execute(text("""
+                SELECT COUNT(*) FROM (
+                    SELECT tipo_catalogo, nombre_oficial, COUNT(*) 
+                    FROM referencias_normalizacion
+                    GROUP BY tipo_catalogo, nombre_oficial
+                    HAVING COUNT(*) > 1
+                ) as duplicados
+            """))
+            
+            duplicados_count = result.fetchone()[0]
+            
+            if duplicados_count > 0:
+                st.warning(f"⚠️ Se encontraron {duplicados_count} grupos de duplicados")
+                
+                if st.button("Confirmar eliminación de duplicados"):
+                    # Eliminar duplicados manteniendo el más reciente
+                    result = conn.execute(text("""
+                        DELETE FROM referencias_normalizacion 
+                        WHERE id_referencia NOT IN (
+                            SELECT DISTINCT ON (tipo_catalogo, nombre_oficial) id_referencia
+                            FROM referencias_normalizacion
+                            ORDER BY tipo_catalogo, nombre_oficial, fecha_actualizacion DESC
+                        )
+                    """))
+                    
+                    conn.commit()
+                    eliminados = result.rowcount
+                    st.success(f"✅ Se eliminaron {eliminados} referencias duplicadas")
+            else:
+                st.success("✅ No hay referencias duplicadas")
+        
+    except Exception as e:
+        st.error(f"Error limpiando duplicados: {str(e)}")
+
+def validar_integridad_referencias_seguro(sistema):
+    """Validar integridad de las referencias con manejo de errores"""
     
-    sistema = SistemaNormalizacion()
+    try:
+        with sistema.engine.connect() as conn:
+            # Verificaciones básicas
+            problemas = []
+            
+            # 1. Referencias sin nombre oficial
+            result = conn.execute(text("""
+                SELECT COUNT(*) FROM referencias_normalizacion 
+                WHERE nombre_oficial IS NULL OR nombre_oficial = ''
+            """))
+            sin_nombre = result.fetchone()[0]
+            
+            # 2. Referencias sin código
+            result = conn.execute(text("""
+                SELECT COUNT(*) FROM referencias_normalizacion 
+                WHERE codigo_oficial IS NULL OR codigo_oficial = ''
+            """))
+            sin_codigo = result.fetchone()[0]
+            
+            # 3. Referencias inactivas
+            result = conn.execute(text("""
+                SELECT COUNT(*) FROM referencias_normalizacion WHERE activo = false
+            """))
+            inactivos = result.fetchone()[0]
+            
+            # 4. Referencias por tipo
+            result = conn.execute(text("""
+                SELECT tipo_catalogo, COUNT(*) 
+                FROM referencias_normalizacion 
+                WHERE activo = true
+                GROUP BY tipo_catalogo
+            """))
+            
+            tipos_count = {}
+            for row in result:
+                tipos_count[row[0]] = row[1]
+        
+        # Mostrar resultados
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if sin_nombre > 0:
+                st.error(f"❌ {sin_nombre} referencias sin nombre oficial")
+                problemas.append(f"{sin_nombre} sin nombre")
+            else:
+                st.success("✅ Todas tienen nombre oficial")
+        
+        with col2:
+            if sin_codigo > 0:
+                st.warning(f"⚠️ {sin_codigo} referencias sin código oficial")
+                problemas.append(f"{sin_codigo} sin código")
+            else:
+                st.success("✅ Todas tienen código oficial")
+        
+        with col3:
+            if inactivos > 0:
+                st.info(f"ℹ️ {inactivos} referencias inactivas")
+            else:
+                st.success("✅ Todas las referencias están activas")
+        
+        # Resumen por tipo
+        if tipos_count:
+            st.markdown("#### 📊 Referencias por Tipo:")
+            for tipo, count in tipos_count.items():
+                st.write(f"**{tipo}:** {count:,} registros")
+        
+        # Resumen final
+        if problemas:
+            st.warning(f"⚠️ Se encontraron algunos problemas: {', '.join(problemas)}")
+        else:
+            st.success("✅ Integridad de referencias OK")
     
-    # Estadísticas de espacio
+    except Exception as e:
+        st.error(f"Error validando integridad: {str(e)}")
+
+def exportar_referencias_seguro(sistema):
+    """Exportar todas las referencias con manejo de errores"""
+    
     try:
         with sistema.engine.connect() as conn:
             result = conn.execute(text("""
-                SELECT 
-                    schemaname,
-                    tablename,
-                    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size,
-                    pg_total_relation_size(schemaname||'.'||tablename) as size_bytes
-                FROM pg_tables 
-                WHERE schemaname = 'public'
-                ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+                SELECT tipo_catalogo, codigo_oficial, nombre_oficial,
+                       coordenadas_lat, coordenadas_lng, estado_padre, municipio_padre,
+                       activo, fecha_actualizacion
+                FROM referencias_normalizacion 
+                WHERE activo = true 
+                ORDER BY tipo_catalogo, nombre_oficial
             """))
             
-            tabla_sizes = [dict(row) for row in result]
-    
-        if tabla_sizes:
-            st.markdown("#### 💽 Uso de Espacio por Tabla:")
+            # CONVERSIÓN SEGURA
+            referencias = []
+            for row in result:
+                try:
+                    # Crear diccionario manualmente
+                    ref_dict = {
+                        'tipo_catalogo': row[0],
+                        'codigo_oficial': row[1],
+                        'nombre_oficial': row[2],
+                        'coordenadas_lat': row[3],
+                        'coordenadas_lng': row[4],
+                        'estado_padre': row[5],
+                        'municipio_padre': row[6],
+                        'activo': row[7],
+                        'fecha_actualizacion': row[8]
+                    }
+                    referencias.append(ref_dict)
+                except Exception as e:
+                    print(f"⚠️ Error convirtiendo row para export: {e}")
+                    continue
+        
+        if referencias:
+            df_export = pd.DataFrame(referencias)
+            csv_export = df_export.to_csv(index=False)
             
-            df_sizes = pd.DataFrame(tabla_sizes)
-            df_sizes = df_sizes[['tablename', 'size']].copy()
-            df_sizes.columns = ['Tabla', 'Tamaño']
+            st.download_button(
+                label="📥 Descargar Referencias Completas",
+                data=csv_export,
+                file_name=f"referencias_completas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
             
-            st.dataframe(df_sizes, use_container_width=True, hide_index=True)
+            st.success(f"✅ Preparadas {len(referencias)} referencias para descarga")
+        else:
+            st.warning("No hay referencias para exportar")
     
     except Exception as e:
-        st.error(f"Error consultando espacio: {str(e)}")
+        st.error(f"Error exportando referencias: {str(e)}")
+
+
+# ========================================
+# FUNCIÓN ALTERNATIVA PARA MANTENIMIENTO BÁSICO
+# AGREGAR ESTA NUEVA FUNCIÓN
+# ========================================
+
+def mantenimiento_basico_seguro(sistema):
+    """Mantenimiento básico sin VACUUM (más seguro)"""
     
-    st.markdown("---")
-    
-    # Herramientas de limpieza
-    st.markdown("#### 🧹 Herramientas de Limpieza:")
+    st.markdown("### 🛠️ Mantenimiento Básico (Seguro)")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("**Limpieza de Datos Antiguos:**")
-        
-        dias_antiguos = st.number_input("Eliminar registros anteriores a (días):", value=90, min_value=30, max_value=365)
-        
-        if st.button("🗑️ Limpiar Datos Antiguos", type="secondary"):
-            if st.checkbox("Confirmar eliminación de datos antiguos"):
-                limpiar_datos_antiguos(sistema, dias_antiguos)
+        if st.button("📊 Solo ANALYZE (Recomendado)", type="primary"):
+            try:
+                with sistema.engine.connect() as conn:
+                    # Solo ANALYZE, sin VACUUM
+                    conn.execute(text("ANALYZE"))
+                    conn.commit()
+                
+                st.success("✅ Estadísticas actualizadas con ANALYZE")
+                st.info("📊 El rendimiento de consultas ha sido optimizado")
+                
+            except Exception as e:
+                st.error(f"Error en ANALYZE: {str(e)}")
     
     with col2:
-        st.markdown("**Optimización de Base de Datos:**")
-        
-        if st.button("⚡ Optimizar Tablas", type="secondary"):
-            optimizar_tablas(sistema)
-        
-        if st.button("📊 Actualizar Estadísticas", type="secondary"):
-            actualizar_estadisticas_bd(sistema)
+        if st.button("🧹 VACUUM Completo (Avanzado)"):
+            if st.checkbox("⚠️ Confirmar VACUUM (puede tomar tiempo)"):
+                optimizar_tablas(sistema)
+
+def mostrar_informacion_mantenimiento():
+    """Mostrar información sobre las opciones de mantenimiento"""
+    
+    st.markdown("### ℹ️ Información de Mantenimiento")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        **📊 ANALYZE (Recomendado):**
+        - ✅ Rápido y seguro
+        - ✅ Actualiza estadísticas
+        - ✅ Mejora rendimiento
+        - ✅ No bloquea tablas
+        """)
+    
+    with col2:
+        st.markdown("""
+        **🧹 VACUUM (Avanzado):**
+        - ⚠️ Puede tomar tiempo
+        - ⚠️ Requiere permisos especiales
+        - ✅ Libera espacio físico
+        - ✅ Reorganiza tablas
+        """)
+    
+    st.info("""
+    **💡 Recomendación:**
+    - Para uso diario: Usar solo **ANALYZE**
+    - Para mantenimiento profundo: Usar **VACUUM** cuando la aplicación tenga poco tráfico
+    - La diferencia principal es que VACUUM libera espacio físico, pero es más lento
+    """)
 
 
 
@@ -3335,7 +3795,7 @@ def mostrar_graficos_analisis():
 # ========================================
 
 def mostrar_estadisticas_sistema():
-    """Estadísticas detalladas del sistema - COMPLETAMENTE CORREGIDO"""
+    """Estadísticas detalladas del sistema - VERSIÓN CORREGIDA"""
     
     st.markdown("### 📊 Estadísticas del Sistema")
     
@@ -3361,7 +3821,17 @@ def mostrar_estadisticas_sistema():
             # CORRECCIÓN PRINCIPAL
             row = result.fetchone()
             if row is not None:
-                stats_generales = dict(row._mapping)
+                # Crear diccionario manualmente para evitar errores
+                stats_generales = {
+                    'total_archivos': row[0] or 0,
+                    'total_registros_cargados': row[1] or 0,
+                    'total_registros_procesados': row[2] or 0,
+                    'registros_exitosos': row[3] or 0,
+                    'requieren_revision': row[4] or 0,
+                    'confianza_promedio': row[5] or 0,
+                    'primera_carga': row[6],
+                    'ultima_carga': row[7]
+                }
             else:
                 stats_generales = {
                     'total_archivos': 0,
@@ -3374,12 +3844,7 @@ def mostrar_estadisticas_sistema():
                     'ultima_carga': None
                 }
             
-            # Asegurar valores no None
-            for key in stats_generales:
-                if stats_generales[key] is None and key not in ['primera_carga', 'ultima_carga']:
-                    stats_generales[key] = 0
-            
-            # Estadísticas por división
+            # Estadísticas por división - CORREGIDO
             result = conn.execute(text("""
                 SELECT 
                     r.division,
@@ -3393,9 +3858,15 @@ def mostrar_estadisticas_sistema():
             
             stats_division = []
             for row in result:
-                stats_division.append(dict(row._mapping))
+                if row is not None:
+                    stats_division.append({
+                        'division': row[0],
+                        'total': row[1],
+                        'exitosos': row[2],
+                        'confianza_promedio': row[3] or 0
+                    })
             
-            # Estadísticas por método
+            # Estadísticas por método - CORREGIDO
             result = conn.execute(text("""
                 SELECT 
                     metodo_usado,
@@ -3409,7 +3880,12 @@ def mostrar_estadisticas_sistema():
             
             stats_metodos = []
             for row in result:
-                stats_metodos.append(dict(row._mapping))
+                if row is not None:
+                    stats_metodos.append({
+                        'metodo_usado': row[0],
+                        'cantidad': row[1],
+                        'confianza_promedio': row[2] or 0
+                    })
     
         # Mostrar estadísticas generales
         st.markdown("#### 📈 Estadísticas Generales:")
@@ -3474,6 +3950,15 @@ def mostrar_estadisticas_sistema():
     
     except Exception as e:
         st.error(f"Error obteniendo estadísticas: {str(e)}")
+        
+        # Debug detallado para administradores
+        usuario_actual = st.session_state.get('usuario_actual', {})
+        rol_usuario = usuario_actual.get('rol', 'USUARIO')
+        
+        if rol_usuario in ['SUPERUSUARIO', 'GERENTE']:
+            if st.checkbox("🔧 Ver detalles del error de estadísticas"):
+                import traceback
+                st.code(traceback.format_exc())
 
 
 # ========================================
@@ -3518,19 +4003,71 @@ def main_aplicacion_original():
     """, unsafe_allow_html=True)
     
     # Header principal
-    col_logo, col_title = st.columns([1, 8])
+    # RRV01 col_logo, col_title = st.columns([1, 8])
+    # with col_logo:
+    #     try:
+    #         st.image("logo_RN.png", width=120)
+    #     except:
+    #         st.markdown("🏠")
+    # with col_title:
+    #     st.markdown("""
+    #     <div  style="text-align: left;">
+    #         <h3>Red Nacional Última Milla</h3>
+    #         <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
+    #     </div>
+    #     """, unsafe_allow_html=True)
+
+    # Header principal CON INDICADOR DE AMBIENTE
+    col_logo, col_title, col_env = st.columns([1, 7, 1])
+    
     with col_logo:
         try:
             st.image("logo_RN.png", width=120)
         except:
             st.markdown("🏠")
+    
     with col_title:
         st.markdown("""
-        <div  style="text-align: left;">
+        <div style="text-align: left;">
             <h3>Red Nacional Última Milla</h3>
             <h5>Sistema Integral de Normalización Domicilios | Procesamiento Inteligente de Domicilios</h5>
         </div>
         """, unsafe_allow_html=True)
+    
+    with col_env:
+        # NUEVO: Indicador de ambiente
+        if IS_RAILWAY:
+            st.markdown("""
+            <div style="
+                background: #10b981; 
+                color: white; 
+                padding: 0.5rem; 
+                border-radius: 12px; 
+                text-align: center;
+                font-size: 0.85rem;
+                font-weight: bold;
+                margin-top: 1rem;
+            ">
+                🚂 RAILWAY<br>
+                <small style="opacity: 0.8;">Producción</small>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="
+                background: #3b82f6; 
+                color: white; 
+                padding: 0.5rem; 
+                border-radius: 12px; 
+                text-align: center;
+                font-size: 0.85rem;
+                font-weight: bold;
+                margin-top: 1rem;
+            ">
+                🏠 LOCAL<br>
+                <small style="opacity: 0.8;">Desarrollo</small>
+            </div>
+            """, unsafe_allow_html=True)
     
     # NAVEGACIÓN PRINCIPAL CON CONTROL POR ROL
     # Obtener rol del usuario actual
@@ -3611,6 +4148,44 @@ def mostrar_seccion_resultados():
     # Consultar resultados
     if st.button("🔍 Buscar Resultados"):
         consultar_resultados_historicos(sistema, tipo_filtro, division_filtro, fecha_desde)
+# ========================================
+# FUNCIÓN GENÉRICA PARA MANEJAR RESULTADOS SQL
+# AGREGAR ESTA FUNCIÓN NUEVA AL ARCHIVO
+# ========================================
+
+def sql_result_to_dict_list(result):
+    """
+    Convertir resultado SQL a lista de diccionarios de forma segura
+    Función auxiliar para evitar errores de SQLAlchemy 2.0
+    """
+    
+    dict_list = []
+    
+    try:
+        for row in result:
+            if row is not None:
+                # Usar _mapping si está disponible (SQLAlchemy 2.0)
+                if hasattr(row, '_mapping'):
+                    dict_list.append(dict(row._mapping))
+                # Fallback para versiones anteriores
+                else:
+                    dict_list.append(dict(row))
+    
+    except Exception as e:
+        print(f"Error convirtiendo resultado SQL: {e}")
+        # Intentar método alternativo
+        try:
+            for row in result:
+                if row is not None:
+                    # Crear diccionario manualmente usando nombres de columnas
+                    row_dict = {}
+                    for i, column in enumerate(result.keys()):
+                        row_dict[column] = row[i]
+                    dict_list.append(row_dict)
+        except Exception as e2:
+            print(f"Error en método alternativo: {e2}")
+    
+    return dict_list
 
 def consultar_resultados_historicos(sistema, tipo_filtro, division_filtro, fecha_desde):
     """Consultar resultados históricos con filtros - CORREGIDA"""
@@ -3820,7 +4395,7 @@ def validar_integridad_referencias(sistema):
         st.error(f"Error validando integridad: {str(e)}")
 
 def exportar_referencias(sistema):
-    """Exportar todas las referencias"""
+    """Exportar todas las referencias - VERSIÓN CORREGIDA"""
     
     try:
         with sistema.engine.connect() as conn:
@@ -3830,7 +4405,12 @@ def exportar_referencias(sistema):
                 ORDER BY tipo_catalogo, nombre_oficial
             """))
             
-            referencias = [dict(row) for row in result]
+            # CORRECCIÓN: Usar _mapping para SQLAlchemy 2.0
+            referencias = []
+            for row in result:
+                if row is not None:
+                    # Convertir Row a diccionario correctamente
+                    referencias.append(dict(row._mapping))
         
         if referencias:
             df_export = pd.DataFrame(referencias)
@@ -3849,66 +4429,250 @@ def exportar_referencias(sistema):
     
     except Exception as e:
         st.error(f"Error exportando referencias: {str(e)}")
+        
+        # Debug detallado
+        if st.checkbox("🔧 Mostrar detalles técnicos del error"):
+            import traceback
+            st.code(traceback.format_exc())
 
 def limpiar_datos_antiguos(sistema, dias):
-    """Limpiar datos anteriores a X días"""
+    """Limpiar datos anteriores a X días - VERSIÓN MEJORADA"""
     
     try:
         fecha_limite = datetime.now() - timedelta(days=dias)
         
+        # Usar SQLAlchemy normal (no necesita autocommit)
         with sistema.engine.connect() as conn:
-            # Eliminar resultados antiguos
+            
+            # Mostrar cuántos registros se van a eliminar
             result = conn.execute(text("""
-                DELETE FROM resultados_normalizacion 
+                SELECT COUNT(*) FROM resultados_normalizacion 
                 WHERE fecha_proceso < :fecha_limite
             """), {'fecha_limite': fecha_limite})
             
-            resultados_eliminados = result.rowcount
+            registros_a_eliminar = result.fetchone()[0]
             
-            # Eliminar archivos sin resultados
             result = conn.execute(text("""
-                DELETE FROM archivos_cargados 
+                SELECT COUNT(*) FROM archivos_cargados 
                 WHERE fecha_carga < :fecha_limite
                 AND id_archivo NOT IN (SELECT DISTINCT id_archivo FROM resultados_normalizacion)
             """), {'fecha_limite': fecha_limite})
             
-            archivos_eliminados = result.rowcount
+            archivos_a_eliminar = result.fetchone()[0]
             
-            conn.commit()
-        
-        st.success(f"✅ Eliminados: {resultados_eliminados} resultados y {archivos_eliminados} archivos")
+            # Mostrar preview
+            st.warning(f"""
+            **Vista previa de eliminación:**
+            - 📊 Resultados a eliminar: {registros_a_eliminar:,}
+            - 📄 Archivos a eliminar: {archivos_a_eliminar:,}
+            - 📅 Anteriores a: {fecha_limite.strftime('%Y-%m-%d')}
+            """)
+            
+            if registros_a_eliminar > 0 or archivos_a_eliminar > 0:
+                if st.button("🗑️ CONFIRMAR ELIMINACIÓN", type="primary"):
+                    
+                    # Crear barra de progreso
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    # Eliminar resultados antiguos
+                    status_text.text("🗑️ Eliminando resultados antiguos...")
+                    progress_bar.progress(0.3)
+                    
+                    result = conn.execute(text("""
+                        DELETE FROM resultados_normalizacion 
+                        WHERE fecha_proceso < :fecha_limite
+                    """), {'fecha_limite': fecha_limite})
+                    
+                    resultados_eliminados = result.rowcount
+                    
+                    # Eliminar archivos sin resultados
+                    status_text.text("🗑️ Eliminando archivos huérfanos...")
+                    progress_bar.progress(0.7)
+                    
+                    result = conn.execute(text("""
+                        DELETE FROM archivos_cargados 
+                        WHERE fecha_carga < :fecha_limite
+                        AND id_archivo NOT IN (SELECT DISTINCT id_archivo FROM resultados_normalizacion)
+                    """), {'fecha_limite': fecha_limite})
+                    
+                    archivos_eliminados = result.rowcount
+                    
+                    # Confirmar cambios
+                    status_text.text("💾 Guardando cambios...")
+                    progress_bar.progress(0.9)
+                    
+                    conn.commit()
+                    
+                    # Completado
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ Limpieza completada")
+                    
+                    st.success(f"""
+                    ✅ **Limpieza completada:**
+                    - 📊 Resultados eliminados: {resultados_eliminados:,}
+                    - 📄 Archivos eliminados: {archivos_eliminados:,}
+                    - 💾 Espacio liberado en base de datos
+                    """)
+                    
+                    # Recomendar optimización después de eliminar muchos datos
+                    if resultados_eliminados > 1000:
+                        st.info("💡 **Recomendación:** Ejecuta 'Optimizar Tablas' para liberar espacio físico")
+            
+            else:
+                st.info(f"ℹ️ No hay datos anteriores a {fecha_limite.strftime('%Y-%m-%d')} para eliminar")
     
     except Exception as e:
         st.error(f"Error limpiando datos antiguos: {str(e)}")
 
 def optimizar_tablas(sistema):
-    """Optimizar tablas de PostgreSQL"""
+    """Optimizar tablas de PostgreSQL - VERSIÓN CORREGIDA"""
     
     try:
-        with sistema.engine.connect() as conn:
-            # VACUUM y ANALYZE en tablas principales
-            tablas = ['resultados_normalizacion', 'archivos_cargados', 'referencias_normalizacion']
-            
-            for tabla in tablas:
-                conn.execute(text(f"VACUUM ANALYZE {tabla}"))
-            
-            conn.commit()
+        # SOLUCIÓN: Usar psycopg2 directo con autocommit
+        import psycopg2
         
-        st.success("✅ Tablas optimizadas correctamente")
-    
+        # Crear conexión directa con autocommit habilitado
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
+        
+        # CRÍTICO: Habilitar autocommit para VACUUM
+        conn.autocommit = True
+        cursor = conn.cursor()
+        
+        # Lista de tablas principales
+        tablas = ['resultados_normalizacion', 'archivos_cargados', 'referencias_normalizacion', 'usuarios', 'sesiones_usuario']
+        
+        # Crear barra de progreso
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        tablas_optimizadas = 0
+        
+        for i, tabla in enumerate(tablas):
+            try:
+                status_text.text(f"⚡ Optimizando tabla: {tabla}...")
+                
+                # Verificar que la tabla existe antes de hacer VACUUM
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = %s
+                    )
+                """, (tabla,))
+                
+                existe = cursor.fetchone()[0]
+                
+                if existe:
+                    # VACUUM ANALYZE sin transacción
+                    cursor.execute(f"VACUUM ANALYZE {tabla}")
+                    tablas_optimizadas += 1
+                    st.success(f"✅ {tabla} optimizada")
+                else:
+                    st.warning(f"⚠️ Tabla {tabla} no existe, omitiendo")
+                
+            except Exception as e:
+                st.warning(f"⚠️ Error optimizando {tabla}: {str(e)}")
+            
+            # Actualizar progreso
+            progress_bar.progress((i + 1) / len(tablas))
+        
+        conn.close()
+        
+        # Resultado final
+        status_text.text("✅ Optimización completada")
+        st.success(f"✅ {tablas_optimizadas} tablas optimizadas correctamente")
+        
+        # Información adicional
+        st.info("""
+        **Optimización realizada:**
+        - ⚡ VACUUM: Liberó espacio no utilizado
+        - 📊 ANALYZE: Actualizó estadísticas del planificador
+        - 🚀 Rendimiento mejorado en consultas futuras
+        """)
+        
     except Exception as e:
         st.error(f"Error optimizando tablas: {str(e)}")
+        
+        # Información de ayuda
+        st.markdown("### 🔧 Información del Error:")
+        st.code(f"""
+Error: {str(e)}
+
+Posibles causas:
+1. Permisos insuficientes para VACUUM
+2. Conexión dentro de transacción
+3. Base de datos bloqueada
+
+Solución aplicada:
+- Usar psycopg2 directo con autocommit=True
+- Verificar existencia de tablas antes de VACUUM
+        """)
 
 def actualizar_estadisticas_bd(sistema):
-    """Actualizar estadísticas de PostgreSQL"""
+    """Actualizar estadísticas de PostgreSQL - VERSIÓN CORREGIDA"""
     
     try:
-        with sistema.engine.connect() as conn:
-            conn.execute(text("ANALYZE"))
-            conn.commit()
+        import psycopg2
+        
+        # Conexión directa con autocommit para ANALYZE
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
+        
+        conn.autocommit = True
+        cursor = conn.cursor()
+        
+        # Crear indicador de progreso
+        with st.spinner("📊 Actualizando estadísticas de la base de datos..."):
+            # ANALYZE global (más seguro que VACUUM)
+            cursor.execute("ANALYZE")
+            
+            # También actualizar estadísticas específicas de tablas importantes
+            tablas_importantes = [
+                'resultados_normalizacion',
+                'archivos_cargados', 
+                'referencias_normalizacion'
+            ]
+            
+            for tabla in tablas_importantes:
+                try:
+                    # Verificar que existe
+                    cursor.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' AND table_name = %s
+                        )
+                    """, (tabla,))
+                    
+                    if cursor.fetchone()[0]:
+                        cursor.execute(f"ANALYZE {tabla}")
+                
+                except Exception as e:
+                    print(f"Warning: No se pudo analizar {tabla}: {e}")
+        
+        conn.close()
         
         st.success("✅ Estadísticas de base de datos actualizadas")
-    
+        
+        # Mostrar información de lo que se hizo
+        st.info("""
+        **Estadísticas actualizadas:**
+        - 📊 Planificador de consultas optimizado
+        - 🎯 Estimaciones de cardinalidad mejoradas  
+        - ⚡ Planes de ejecución más eficientes
+        """)
+        
     except Exception as e:
         st.error(f"Error actualizando estadísticas: {str(e)}")
 
@@ -4380,7 +5144,7 @@ Tipo: {type(e).__name__}
 def eliminar_archivo_ultra_simple(id_archivo):
     """
     Eliminación ultra simple usando psycopg2 directo
-    CORREGIDA PARA RAILWAY
+    REEMPLAZAR LA FUNCIÓN PROBLEMÁTICA POR ESTA
     """
     
     st.markdown("### 🗑️ Eliminación Ultra Simple")
@@ -4392,38 +5156,22 @@ def eliminar_archivo_ultra_simple(id_archivo):
             
             try:
                 import psycopg2
-                from urllib.parse import urlparse
                 
                 # Progreso
                 progress = st.progress(0)
                 status = st.empty()
                 
-                # CORRECCIÓN: Conectar según el ambiente
+                # Conectar con psycopg2 directo
                 status.text("🔌 Conectando con psycopg2...")
                 progress.progress(0.1)
                 
-                if IS_RAILWAY and 'url' in DATABASE_CONFIG:
-                    # En Railway: parsear DATABASE_URL
-                    database_url = DATABASE_CONFIG['url']
-                    parsed = urlparse(database_url)
-                    
-                    conn = psycopg2.connect(
-                        host=parsed.hostname,
-                        port=parsed.port or 5432,
-                        database=parsed.path[1:],  # Quitar el '/' inicial
-                        user=parsed.username,
-                        password=parsed.password,
-                        sslmode='require'  # Railway requiere SSL
-                    )
-                else:
-                    # Local: usar configuración tradicional
-                    conn = psycopg2.connect(
-                        host=DATABASE_CONFIG['host'],
-                        port=DATABASE_CONFIG['port'],
-                        database=DATABASE_CONFIG['database'],
-                        user=DATABASE_CONFIG['user'],
-                        password=DATABASE_CONFIG['password']
-                    )
+                conn = psycopg2.connect(
+                    host=DATABASE_CONFIG['host'],
+                    port=DATABASE_CONFIG['port'],
+                    database=DATABASE_CONFIG['database'],
+                    user=DATABASE_CONFIG['user'],
+                    password=DATABASE_CONFIG['password']
+                )
                 
                 cursor = conn.cursor()
                 
@@ -4551,7 +5299,7 @@ def mostrar_interfaz_carga_limitada():
 
 
 def mostrar_parametros_sistema_admin():
-    """Parámetros del sistema - SOLO para SUPERUSUARIOS"""
+    """Parámetros del sistema - VERSIÓN CORREGIDA CON BOTONES FUNCIONALES"""
     
     st.markdown("#### ⚙️ Parámetros del Sistema")
     st.markdown("🔒 **Acceso de Administrador** - Configuración técnica avanzada")
@@ -4584,97 +5332,186 @@ def mostrar_parametros_sistema_admin():
         - **Menor TTL** = Más consultas, datos más actualizados
         """)
     
+    # Inicializar valores por defecto si no existen
+    if 'config_batch_size' not in st.session_state:
+        st.session_state.config_batch_size = 1000
+    if 'config_timeout' not in st.session_state:
+        st.session_state.config_timeout = 30
+    if 'config_workers' not in st.session_state:
+        st.session_state.config_workers = 4
+    if 'config_cache_ttl' not in st.session_state:
+        st.session_state.config_cache_ttl = 300
+    
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("**⚡ Rendimiento:**")
         batch_size = st.number_input(
             "🔢 Tamaño de lote para procesamiento:", 
-            value=1000, 
+            value=st.session_state.config_batch_size, 
             min_value=100, 
             max_value=10000,
             step=100,
-            help="Registros procesados por lote. Más alto = más memoria pero más rápido."
+            help="Registros procesados por lote. Más alto = más memoria pero más rápido.",
+            key="batch_size_input"
         )
         
         timeout_seconds = st.number_input(
             "⏱️ Timeout de consultas (segundos):", 
-            value=30, 
+            value=st.session_state.config_timeout, 
             min_value=5, 
             max_value=300,
             step=5,
-            help="Tiempo máximo para una consulta SQL antes de cancelarla."
+            help="Tiempo máximo para una consulta SQL antes de cancelarla.",
+            key="timeout_input"
         )
     
     with col2:
         st.markdown("**🔧 Concurrencia:**")
         max_workers = st.number_input(
             "🧵 Número máximo de hilos:", 
-            value=4, 
+            value=st.session_state.config_workers, 
             min_value=1, 
             max_value=16,
             step=1,
-            help="Procesos paralelos. Más hilos = más velocidad pero más CPU."
+            help="Procesos paralelos. Más hilos = más velocidad pero más CPU.",
+            key="workers_input"
         )
         
         cache_ttl = st.number_input(
             "💾 TTL de cache (segundos):", 
-            value=300, 
+            value=st.session_state.config_cache_ttl, 
             min_value=60, 
             max_value=3600,
             step=30,
-            help="Tiempo que los resultados se mantienen en memoria."
+            help="Tiempo que los resultados se mantienen en memoria.",
+            key="cache_input"
         )
     
-    # Recomendaciones automáticas
+    # Recomendaciones automáticas - CORREGIDAS
     st.markdown("#### 💡 Recomendaciones Automáticas:")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
         if st.button("📱 Configurar para archivos pequeños", help="< 1,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 500,
-                'timeout': 15,
-                'workers': 2,
-                'cache': 300
-            }
+            # APLICAR CONFIGURACIÓN PARA ARCHIVOS PEQUEÑOS
+            st.session_state.config_batch_size = 500
+            st.session_state.config_timeout = 15
+            st.session_state.config_workers = 2
+            st.session_state.config_cache_ttl = 300
+            
             st.success("✅ Configuración aplicada para archivos pequeños")
+            st.info("""
+            **Configuración aplicada:**
+            - 🔢 Lote: 500 registros
+            - ⏱️ Timeout: 15 segundos
+            - 🧵 Hilos: 2
+            - 💾 Cache: 300 segundos
+            """)
+            
+            # Forzar actualización de la interfaz
+            st.rerun()
     
     with col2:
         if st.button("📊 Configurar para archivos medianos", help="1,000 - 10,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 1000,
-                'timeout': 30,
-                'workers': 4,
-                'cache': 300
-            }
+            # APLICAR CONFIGURACIÓN PARA ARCHIVOS MEDIANOS
+            st.session_state.config_batch_size = 1000
+            st.session_state.config_timeout = 30
+            st.session_state.config_workers = 4
+            st.session_state.config_cache_ttl = 300
+            
             st.success("✅ Configuración aplicada para archivos medianos")
+            st.info("""
+            **Configuración aplicada:**
+            - 🔢 Lote: 1,000 registros
+            - ⏱️ Timeout: 30 segundos
+            - 🧵 Hilos: 4
+            - 💾 Cache: 300 segundos
+            """)
+            
+            # Forzar actualización de la interfaz
+            st.rerun()
     
     with col3:
         if st.button("📈 Configurar para archivos grandes", help="> 10,000 registros"):
-            st.session_state.config_sugerida = {
-                'batch_size': 2000,
-                'timeout': 60,
-                'workers': 6,
-                'cache': 600
-            }
+            # APLICAR CONFIGURACIÓN PARA ARCHIVOS GRANDES
+            st.session_state.config_batch_size = 2000
+            st.session_state.config_timeout = 60
+            st.session_state.config_workers = 6
+            st.session_state.config_cache_ttl = 600
+            
             st.success("✅ Configuración aplicada para archivos grandes")
+            st.info("""
+            **Configuración aplicada:**
+            - 🔢 Lote: 2,000 registros
+            - ⏱️ Timeout: 60 segundos
+            - 🧵 Hilos: 6
+            - 💾 Cache: 600 segundos
+            """)
+            
+            # Forzar actualización de la interfaz
+            st.rerun()
+    
+    # Detectar cambios en los valores
+    valores_cambiados = (
+        batch_size != st.session_state.config_batch_size or
+        timeout_seconds != st.session_state.config_timeout or
+        max_workers != st.session_state.config_workers or
+        cache_ttl != st.session_state.config_cache_ttl
+    )
+    
+    # Mostrar estado de configuración actual
+    st.markdown("---")
+    st.markdown("#### 📊 Configuración Actual:")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("🔢 Lote", f"{batch_size:,}")
+    with col2:
+        st.metric("⏱️ Timeout", f"{timeout_seconds}s")
+    with col3:
+        st.metric("🧵 Hilos", max_workers)
+    with col4:
+        st.metric("💾 Cache", f"{cache_ttl}s")
     
     # Botón para guardar configuración
-    if st.button("💾 Guardar Configuración", type="primary"):
-        # Guardar en base de datos o archivo de configuración
-        guardar_configuracion_sistema(batch_size, timeout_seconds, max_workers, cache_ttl)
-        st.success("✅ Configuración guardada correctamente")
-        
-        # Mostrar resumen de lo guardado
-        st.info(f"""
-        **Configuración guardada:**
-        - 🔢 Lote: {batch_size:,} registros
-        - ⏱️ Timeout: {timeout_seconds} segundos
-        - 🧵 Hilos: {max_workers}
-        - 💾 Cache: {cache_ttl} segundos
-        """)
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        if valores_cambiados:
+            st.warning("⚠️ Hay cambios sin guardar en la configuración")
+        else:
+            st.success("✅ Configuración sincronizada")
+    
+    with col2:
+        if st.button("💾 Guardar Configuración", type="primary", disabled=not valores_cambiados):
+            # Guardar en session_state
+            st.session_state.config_batch_size = batch_size
+            st.session_state.config_timeout = timeout_seconds
+            st.session_state.config_workers = max_workers
+            st.session_state.config_cache_ttl = cache_ttl
+            
+            # Guardar en base de datos
+            success = guardar_configuracion_sistema(batch_size, timeout_seconds, max_workers, cache_ttl)
+            
+            if success:
+                st.success("✅ Configuración guardada correctamente")
+                
+                # Mostrar resumen de lo guardado
+                st.info(f"""
+                **Configuración guardada:**
+                - 🔢 Lote: {batch_size:,} registros
+                - ⏱️ Timeout: {timeout_seconds} segundos
+                - 🧵 Hilos: {max_workers}
+                - 💾 Cache: {cache_ttl} segundos
+                """)
+                
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("❌ Error guardando configuración")
 
 
 def mostrar_mensaje_permisos_parametros(rol_usuario):
@@ -4792,13 +5629,15 @@ def guardar_configuracion_sistema(batch_size, timeout, workers, cache_ttl):
 
 def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref, nombre_archivo):
     """
-    Función de carga que fuerza la actualización de la interfaz
-    CORREGIDA PARA RAILWAY
+    Función de carga que NORMALIZA las referencias antes de insertarlas
+    VERSIÓN CORREGIDA - REEMPLAZAR la función existente
     """
     
     try:
         import psycopg2
-        from urllib.parse import urlparse
+        
+        # CREAR INSTANCIA DEL SISTEMA PARA NORMALIZACIÓN
+        sistema = SistemaNormalizacion()
         
         # Validar datos básicos
         if 'nombre_oficial' not in df_ref.columns or 'codigo_oficial' not in df_ref.columns:
@@ -4810,31 +5649,45 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
             st.error(f"❌ Hay {registros_vacios} registros sin nombre oficial")
             return False
         
-        # CORRECCIÓN: Conectar según el ambiente
+        # ========================================
+        # NUEVA SECCIÓN: PRE-NORMALIZACIÓN
+        # ========================================
+        st.info("🧠 Normalizando nombres de referencia...")
+        
+        # Crear columna normalizada para preview
+        df_ref['nombre_normalizado'] = df_ref['nombre_oficial'].apply(
+            lambda x: sistema.limpiar_texto_inteligente(str(x), tipo_ref)
+        )
+        
+        # Mostrar preview de normalización (primeros 5)
+        with st.expander("👀 Preview de Normalización (primeros 5 registros)"):
+            preview_df = df_ref[['nombre_oficial', 'nombre_normalizado']].head().copy()
+            preview_df.columns = ['Original', 'Normalizado']
+            st.dataframe(preview_df, use_container_width=True)
+        
+        # Detectar cambios significativos
+        cambios = sum(1 for i, row in df_ref.iterrows() 
+                     if row['nombre_oficial'].upper().strip() != row['nombre_normalizado'])
+        
+        if cambios > 0:
+            st.warning(f"⚠️ Se normalizarán {cambios:,} nombres ({cambios/len(df_ref)*100:.1f}%)")
+        else:
+            st.success("✅ Los nombres ya están normalizados")
+        
+        # ========================================
+        # CONTINUAR CON INSERCIÓN NORMALIZADA
+        # ========================================
+        
+        # Conectar con psycopg2
         st.info("🔌 Conectando a PostgreSQL...")
         
-        if IS_RAILWAY and 'url' in DATABASE_CONFIG:
-            # En Railway: parsear DATABASE_URL
-            database_url = DATABASE_CONFIG['url']
-            parsed = urlparse(database_url)
-            
-            conn = psycopg2.connect(
-                host=parsed.hostname,
-                port=parsed.port or 5432,
-                database=parsed.path[1:],  # Quitar el '/' inicial
-                user=parsed.username,
-                password=parsed.password,
-                sslmode='require'  # Railway requiere SSL
-            )
-        else:
-            # Local: usar configuración tradicional
-            conn = psycopg2.connect(
-                host=DATABASE_CONFIG['host'],
-                port=DATABASE_CONFIG['port'],
-                database=DATABASE_CONFIG['database'],
-                user=DATABASE_CONFIG['user'],
-                password=DATABASE_CONFIG['password']
-            )
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
         
         cursor = conn.cursor()
         
@@ -4862,18 +5715,27 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
                 conn.close()
                 return False
         
-        # INSERTAR nuevas referencias
-        st.info(f"📥 Insertando {len(df_ref):,} nuevas referencias...")
+        # INSERTAR nuevas referencias NORMALIZADAS
+        st.info(f"📥 Insertando {len(df_ref):,} nuevas referencias normalizadas...")
         
         # Crear barra de progreso
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         insertados = 0
+        normalizados = 0
         timestamp_carga = datetime.now()
         
         for idx, row in df_ref.iterrows():
             try:
+                # CRÍTICO: USAR EL NOMBRE NORMALIZADO
+                nombre_original = str(row.get('nombre_oficial', ''))
+                nombre_normalizado = sistema.limpiar_texto_inteligente(nombre_original, tipo_ref)
+                
+                # Contar si hubo normalización
+                if nombre_original.upper().strip() != nombre_normalizado:
+                    normalizados += 1
+                
                 cursor.execute("""
                     INSERT INTO referencias_normalizacion 
                     (tipo_catalogo, codigo_oficial, nombre_oficial, nombre_alternativo, 
@@ -4883,8 +5745,8 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
                 """, (
                     tipo_ref,
                     str(row.get('codigo_oficial', f'AUTO_{idx}')),
-                    str(row.get('nombre_oficial', '')).strip(),
-                    json.dumps(row.get('nombres_alternativos', [])) if 'nombres_alternativos' in row else None,
+                    nombre_normalizado,  # ← CAMBIO CRÍTICO: USAR NORMALIZADO
+                    json.dumps([nombre_original] if nombre_original != nombre_normalizado else []),  # Guardar original como alternativo
                     float(row['coordenadas_lat']) if 'coordenadas_lat' in row and pd.notna(row['coordenadas_lat']) else None,
                     float(row['coordenadas_lng']) if 'coordenadas_lng' in row and pd.notna(row['coordenadas_lng']) else None,
                     str(row.get('estado_padre', '')) if 'estado_padre' in row and pd.notna(row.get('estado_padre')) else None,
@@ -4922,16 +5784,23 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
         
         conn.close()
         
-        # MOSTRAR RESULTADO FINAL
+        # MOSTRAR RESULTADO FINAL CON ESTADÍSTICAS DE NORMALIZACIÓN
         if total_final == insertados:
             st.success(f"""
-            ## 🎉 CARGA EXITOSA
+            ## 🎉 CARGA EXITOSA CON NORMALIZACIÓN
             
             **✅ Resultado:**
             - **Eliminadas:** {total_existentes:,} referencias anteriores
             - **Insertadas:** {insertados:,} nuevas referencias  
+            - **Normalizadas:** {normalizados:,} nombres ({normalizados/insertados*100:.1f}%)
             - **Total {tipo_ref}:** {total_final:,} referencias
             - **Total sistema:** {total_global:,} referencias
+            
+            **🧠 Normalización aplicada:**
+            - ✅ Convertidas a MAYÚSCULAS
+            - ✅ Acentos removidos
+            - ✅ Abreviaciones expandidas
+            - ✅ Caracteres especiales limpiados
             
             **🔄 La tabla se actualizará automáticamente...**
             """)
@@ -4952,8 +5821,1720 @@ def cargar_referencias_con_actualizacion_automatica(df_ref, tipo_ref, fuente_ref
         st.code(traceback.format_exc())
         return False
 
+# ========================================
+# FUNCIÓN ADICIONAL: LIMPIAR DATOS ANTES DE VALIDAR
+# ========================================
+
+def preparar_dataframe_para_validacion(df):
+    """
+    Prepara el DataFrame limpiando valores problemáticos antes de la validación
+    NUEVA FUNCIÓN - AGREGAR AL SISTEMA
+    """
+    
+    df_limpio = df.copy()
+    
+    for columna in df_limpio.columns:
+        # Reemplazar valores problemáticos por cadenas vacías
+        df_limpio[columna] = df_limpio[columna].astype(str)
+        
+        # Limpiar valores que representan "vacío"
+        df_limpio[columna] = df_limpio[columna].replace({
+            'nan': '',
+            'NaN': '',
+            'None': '',
+            'null': '',
+            'NULL': '',
+            'NA': '',
+            ' ': '',  # Solo espacios
+            'NaT': ''  # Not a Time
+        })
+        
+        # Limpiar espacios al inicio y final
+        df_limpio[columna] = df_limpio[columna].str.strip()
+    
+    return df_limpio
 
 
+# ========================================
+# FUNCIÓN MEJORADA: MOSTRAR ESTRUCTURA CON INFORMACIÓN DE CAMPOS OPCIONALES
+# ========================================
+
+def mostrar_estructura_esperada_mejorada_ACTUALIZADA(tipo_catalogo):
+    """
+    Mostrar estructura esperada con información sobre campos opcionales
+    REEMPLAZAR LA FUNCIÓN EXISTENTE
+    """
+    
+    if tipo_catalogo in ESQUEMAS_AS400:
+        st.markdown(f"#### 📋 Estructura Esperada para {tipo_catalogo}:")
+        
+        esquema = ESQUEMAS_AS400[tipo_catalogo]
+        
+        # Identificar campo principal (descripción)
+        CAMPO_PRINCIPAL = {
+            'ESTADOS': 'STADES',
+            'CIUDADES': 'CTYDES', 
+            'MUNICIPIOS': 'MPIDES',
+            'ALCALDIAS': 'DLGDES',
+            'COLONIAS': 'SDADES'
+        }
+        
+        # Identificar campos que pueden estar vacíos
+        CAMPOS_OPCIONALES = {
+            'ESTADOS': ['STASTS'],
+            'CIUDADES': ['CTYSTS'],
+            'MUNICIPIOS': ['MPISTS'],
+            'ALCALDIAS': ['DLGSTS'],
+            'COLONIAS': ['SDASTS']
+        }
+        
+        campo_principal = CAMPO_PRINCIPAL.get(tipo_catalogo)
+        campos_opcionales = CAMPOS_OPCIONALES.get(tipo_catalogo, [])
+        
+        estructura_data = []
+        for campo, info in esquema.items():
+            es_principal = campo == campo_principal
+            es_opcional = campo in campos_opcionales
+            
+            # Determinar obligatoriedad
+            if es_principal:
+                obligatorio = '✅ REQUERIDO'
+            elif es_opcional:
+                obligatorio = '⚪ OPCIONAL'
+            else:
+                obligatorio = '✅ REQUERIDO'
+            
+            estructura_data.append({
+                'Campo': campo,
+                'Tipo': info['tipo'],
+                'Longitud': info['longitud'],
+                'Descripción': info['descripcion'],
+                'Es Principal': '🎯 SÍ' if es_principal else 'No',
+                'Obligatorio': obligatorio
+            })
+        
+        estructura_df = pd.DataFrame(estructura_data)
+        st.dataframe(estructura_df, use_container_width=True, hide_index=True)
+        
+        # INFORMACIÓN IMPORTANTE SOBRE CAMPOS VACÍOS
+        st.info(f"""
+        **ℹ️ Información importante sobre campos vacíos:**
+        
+        **✅ Campos que PUEDEN estar vacíos:**
+        {', '.join(campos_opcionales) if campos_opcionales else 'Ninguno definido'}
+        
+        **🎯 Campo PRINCIPAL (debe tener datos):**
+        {campo_principal} - Máximo 10% de registros pueden estar vacíos
+        
+        **📝 Nota:** Los campos de Status generalmente pueden estar vacíos o contener 'A' (Activo), 'I' (Inactivo), etc.
+        """)
+        
+        # Mostrar ejemplo de datos
+        ejemplos = {
+            'ESTADOS': """STASTS,STASAB,STADES
+,01,AGUASCALIENTES
+A,02,BAJA CALIFORNIA
+,03,BAJA CALIFORNIA SUR""",
+            'CIUDADES': """CTYSTS,CTYCAB,CTYDES
+,001,AGUASCALIENTES
+A,002,MEXICALI
+,003,TIJUANA""",
+            'MUNICIPIOS': """MPISTS,MPICVE,MPIDES
+,001,AGUASCALIENTES
+A,002,ASIENTOS
+,003,CALVILLO""",
+            'ALCALDIAS': """DLGSTS,DLGCVE,DLGDES
+,001,ALVARO OBREGON
+A,002,AZCAPOTZALCO
+,003,BENITO JUAREZ""",
+            'COLONIAS': """SDASTS,SDASDA,SDADES
+,00001,CENTRO
+A,00002,DOCTORES
+,00003,OBRERA"""
+        }
+        
+        if tipo_catalogo in ejemplos:
+            st.markdown("**Ejemplo de datos correctos (nota los campos de Status vacíos):**")
+            st.code(ejemplos[tipo_catalogo], language="csv")
+
+
+# ========================================
+# DIAGNÓSTICO Y CORRECCIÓN DE PROCESAMIENTO
+# ========================================
+
+def diagnosticar_archivos_cargados(sistema):
+    """Función de diagnóstico para ver qué está pasando"""
+    
+    st.markdown("### 🔍 Diagnóstico de Archivos")
+    
+    try:
+        with sistema.engine.connect() as conn:
+            
+            # 1. VERIFICAR TODAS LAS TABLAS
+            st.markdown("#### 1️⃣ Verificar Tablas Existentes")
+            
+            result = conn.execute(text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                ORDER BY table_name
+            """))
+            
+            tablas = [row[0] for row in result]
+            
+            if tablas:
+                st.success(f"✅ Tablas encontradas: {', '.join(tablas)}")
+            else:
+                st.error("❌ No se encontraron tablas")
+                return
+            
+            # 2. VERIFICAR ARCHIVOS_CARGADOS (SIN FILTRO DE FECHA)
+            st.markdown("#### 2️⃣ Todos los Archivos Cargados (Sin filtro de fecha)")
+            
+            result = conn.execute(text("""
+                SELECT 
+                    id_archivo,
+                    nombre_archivo,
+                    tipo_catalogo,
+                    division,
+                    total_registros,
+                    fecha_carga,
+                    estado_procesamiento,
+                    usuario
+                FROM archivos_cargados
+                ORDER BY fecha_carga DESC
+            """))
+            
+            todos_archivos = []
+            for row in result:
+                if row:
+                    todos_archivos.append({
+                        'id_archivo': row[0],
+                        'nombre_archivo': row[1],
+                        'tipo_catalogo': row[2],
+                        'division': row[3],
+                        'total_registros': row[4],
+                        'fecha_carga': row[5],
+                        'estado_procesamiento': row[6],
+                        'usuario': row[7]
+                    })
+            
+            if todos_archivos:
+                st.success(f"✅ TOTAL ARCHIVOS ENCONTRADOS: {len(todos_archivos)}")
+                
+                # Mostrar en tabla
+                df_archivos = pd.DataFrame(todos_archivos)
+                df_archivos['fecha_carga'] = pd.to_datetime(df_archivos['fecha_carga']).dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                st.dataframe(df_archivos, use_container_width=True, hide_index=True)
+            
+            else:
+                st.error("❌ NO HAY ARCHIVOS CARGADOS")
+                st.info("Esto significa que el archivo no se cargó correctamente en la base de datos")
+    
+    except Exception as e:
+        st.error(f"❌ Error en diagnóstico: {str(e)}")
+
+
+
+
+
+
+
+
+
+
+# ========================================
+# SOLUCIÓN DE EMERGENCIA - CACHE COLGADO
+# ========================================
+
+# PASO 1: DESHABILITAR EL CACHE TEMPORALMENTE
+# Reemplaza la función cargar_referencias_con_cache_ACTUALIZADO() por esta versión SIN CACHE:
+
+def cargar_referencias_SIN_CACHE_TEMPORAL(df_ref, tipo_ref, fuente_ref, nombre_archivo):
+    """
+    REEMPLAZA TEMPORALMENTE cargar_referencias_con_cache_ACTUALIZADO()
+    
+    Versión SIN cache para que funcione mientras arreglamos el problema
+    """
+    
+    try:
+        import psycopg2
+        
+        # Crear instancia del sistema para normalización (SIN CACHE)
+        sistema = SistemaNormalizacion()
+        
+        # Validación (código existente igual)
+        if 'nombre_oficial' not in df_ref.columns or 'codigo_oficial' not in df_ref.columns:
+            st.error("❌ Faltan columnas requeridas")
+            return False
+        
+        registros_vacios = df_ref['nombre_oficial'].isna().sum() + (df_ref['nombre_oficial'] == '').sum()
+        if registros_vacios > 0:
+            st.error(f"❌ Hay {registros_vacios} registros sin nombre oficial")
+            return False
+        
+        # Pre-normalización
+        st.info("🧠 Normalizando nombres de referencia...")
+        
+        df_ref['nombre_normalizado'] = df_ref['nombre_oficial'].apply(
+            lambda x: sistema.limpiar_texto_inteligente(str(x), tipo_ref)
+        )
+        
+        # Preview de normalización
+        with st.expander("👀 Preview de Normalización (primeros 5 registros)"):
+            preview_df = df_ref[['nombre_oficial', 'nombre_normalizado']].head().copy()
+            preview_df.columns = ['Original', 'Normalizado']
+            st.dataframe(preview_df, use_container_width=True)
+        
+        # Detectar cambios
+        cambios = sum(1 for i, row in df_ref.iterrows() 
+                     if row['nombre_oficial'].upper().strip() != row['nombre_normalizado'])
+        
+        if cambios > 0:
+            st.warning(f"⚠️ Se normalizarán {cambios:,} nombres ({cambios/len(df_ref)*100:.1f}%)")
+        else:
+            st.success("✅ Los nombres ya están normalizados")
+        
+        # Conectar con psycopg2
+        st.info("🔌 Conectando a PostgreSQL...")
+        
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
+        
+        cursor = conn.cursor()
+        
+        # Contar referencias existentes
+        st.info("📊 Contando referencias existentes...")
+        cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+        total_existentes = cursor.fetchone()[0]
+        
+        if total_existentes > 0:
+            st.warning(f"⚠️ Se reemplazarán {total_existentes:,} referencias existentes de {tipo_ref}")
+        
+        # ELIMINAR referencias existentes
+        if total_existentes > 0:
+            st.info(f"🗑️ Eliminando {total_existentes:,} referencias existentes...")
+            cursor.execute("DELETE FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+            eliminados = cursor.rowcount
+            st.info(f"✅ Eliminados: {eliminados:,}")
+            
+            cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+            verificacion = cursor.fetchone()[0]
+            
+            if verificacion > 0:
+                st.error(f"❌ DELETE falló - quedan {verificacion:,} registros")
+                conn.close()
+                return False
+        
+        # INSERTAR nuevas referencias
+        st.info(f"📥 Insertando {len(df_ref):,} nuevas referencias normalizadas...")
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        insertados = 0
+        normalizados = 0
+        timestamp_carga = datetime.now()
+        
+        for idx, row in df_ref.iterrows():
+            try:
+                nombre_original = str(row.get('nombre_oficial', ''))
+                nombre_normalizado = sistema.limpiar_texto_inteligente(nombre_original, tipo_ref)
+                
+                if nombre_original.upper().strip() != nombre_normalizado:
+                    normalizados += 1
+                
+                cursor.execute("""
+                    INSERT INTO referencias_normalizacion 
+                    (tipo_catalogo, codigo_oficial, nombre_oficial, nombre_alternativo, 
+                     coordenadas_lat, coordenadas_lng, estado_padre, municipio_padre, 
+                     activo, fecha_actualizacion)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    tipo_ref,
+                    str(row.get('codigo_oficial', f'AUTO_{idx}')),
+                    nombre_normalizado,
+                    json.dumps([nombre_original] if nombre_original != nombre_normalizado else []),
+                    float(row['coordenadas_lat']) if 'coordenadas_lat' in row and pd.notna(row['coordenadas_lat']) else None,
+                    float(row['coordenadas_lng']) if 'coordenadas_lng' in row and pd.notna(row['coordenadas_lng']) else None,
+                    str(row.get('estado_padre', '')) if 'estado_padre' in row and pd.notna(row.get('estado_padre')) else None,
+                    str(row.get('municipio_padre', '')) if 'municipio_padre' in row and pd.notna(row.get('municipio_padre')) else None,
+                    True,
+                    timestamp_carga
+                ))
+                
+                insertados += 1
+                
+                if insertados % 10 == 0:
+                    progress = insertados / len(df_ref)
+                    progress_bar.progress(progress)
+                    status_text.text(f"📥 Insertados: {insertados:,} / {len(df_ref):,} ({progress:.1%})")
+                
+            except Exception as e:
+                st.warning(f"⚠️ Error en registro {idx}: {str(e)}")
+        
+        progress_bar.progress(1.0)
+        status_text.text(f"✅ Insertados: {insertados:,} registros")
+        
+        # COMMIT
+        st.info("💾 Guardando cambios...")
+        conn.commit()
+        
+        # VERIFICACIÓN FINAL
+        st.info("🔍 Verificando resultado...")
+        cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+        total_final = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion")
+        total_global = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        # ========================================
+        # SIN CACHE - SOLO MENSAJE DE ÉXITO
+        # ========================================
+        
+        if total_final == insertados:
+            st.success(f"""
+            ## 🎉 CARGA EXITOSA CON NORMALIZACIÓN (SIN CACHE)
+            
+            **✅ Resultado:**
+            - **Eliminadas:** {total_existentes:,} referencias anteriores
+            - **Insertadas:** {insertados:,} nuevas referencias  
+            - **Normalizadas:** {normalizados:,} nombres ({normalizados/insertados*100:.1f}%)
+            - **Total {tipo_ref}:** {total_final:,} referencias
+            - **Total sistema:** {total_global:,} referencias
+            
+            **🧠 Normalización aplicada:**
+            - ✅ Convertidas a MAYÚSCULAS
+            - ✅ Acentos removidos
+            - ✅ Abreviaciones expandidas
+            - ✅ Caracteres especiales limpiados
+            
+            **ℹ️ Cache temporalmente deshabilitado**
+            - La carga funcionó correctamente
+            - El cache se arreglará en la próxima versión
+            
+            **🔄 La tabla se actualizará automáticamente...**
+            """)
+            
+            if 'referencias_actualizadas' not in st.session_state:
+                st.session_state.referencias_actualizadas = 0
+            st.session_state.referencias_actualizadas += 1
+            
+            return True
+        else:
+            st.error(f"❌ Discrepancia: insertados {insertados:,}, final {total_final:,}")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Error en carga: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        return False
+
+# ========================================
+# PASO 2: DESHABILITAR BÚSQUEDA CON CACHE TAMBIÉN
+# ========================================
+
+def buscar_en_referencias_SIN_CACHE_TEMPORAL(self, texto_limpio, tipo_catalogo):
+    """
+    REEMPLAZA TEMPORALMENTE buscar_en_referencias_CON_CACHE()
+    
+    Versión SIN cache que va directo a PostgreSQL (más lento pero funciona)
+    """
+    
+    print(f"🔍 Buscando SIN CACHE: '{texto_limpio}' en {tipo_catalogo}")
+    
+    try:
+        # CONSULTA DIRECTA A POSTGRESQL (sin cache)
+        with self.engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT * FROM referencias_normalizacion 
+                WHERE tipo_catalogo = :tipo AND activo = true
+            """), {'tipo': tipo_catalogo})
+            
+            referencias = []
+            for row in result:
+                referencias.append(dict(row._mapping))
+        
+        if not referencias:
+            print(f"   ❌ No hay referencias para {tipo_catalogo}")
+            return None
+        
+        print(f"   📊 Encontradas {len(referencias)} referencias para {tipo_catalogo} (DIRECTO PostgreSQL)")
+        
+        # Resto del código IDÉNTICO
+        # Buscar coincidencia exacta
+        for ref in referencias:
+            nombre_ref_limpio = ref['nombre_oficial'].upper().strip()
+            if texto_limpio == nombre_ref_limpio:
+                print(f"   ✅ EXACTO: '{texto_limpio}' = '{nombre_ref_limpio}'")
+                return {
+                    **ref,
+                    'metodo': 'EXACTO',
+                    'confianza': 1.0
+                }
+        
+        # Buscar con fuzzy matching
+        nombres_referencias = [ref['nombre_oficial'].upper().strip() for ref in referencias]
+        
+        from fuzzywuzzy import fuzz, process
+        mejor_fuzzy = process.extractOne(texto_limpio, nombres_referencias, scorer=fuzz.token_sort_ratio)
+        
+        if mejor_fuzzy and mejor_fuzzy[1] >= 60:
+            for ref in referencias:
+                nombre_ref = ref['nombre_oficial'].upper().strip()
+                if nombre_ref == mejor_fuzzy[0]:
+                    print(f"   ✅ FUZZY: '{texto_limpio}' → '{nombre_ref}' ({mejor_fuzzy[1]}%)")
+                    return {
+                        **ref,
+                        'metodo': 'FUZZY_ALTO' if mejor_fuzzy[1] >= 80 else 'FUZZY_BAJO',
+                        'confianza': mejor_fuzzy[1] / 100.0
+                    }
+        
+        print(f"   ❌ Sin coincidencias para '{texto_limpio}'")
+        return None
+        
+    except Exception as e:
+        print(f"   ❌ Error buscando referencias: {e}")
+        return None
+
+
+
+# ========================================
+# CACHE SIMPLIFICADO Y ROBUSTO - VERSIÓN 2.0
+# ========================================
+
+import time
+from datetime import datetime, timedelta
+
+# ========================================
+# 1. CACHE SIMPLE SIN THREADING
+# ========================================
+
+class CacheSimplificado:
+    """
+    Cache simplificado sin threading que no se cuelga
+    Funciona igual de bien pero más estable
+    """
+    
+    def __init__(self):
+        self.cache_data = {}  # {tipo: {'data': [...], 'timestamp': datetime, 'ttl_days': int}}
+        self.stats = {'hits': 0, 'misses': 0, 'invalidaciones': 0}
+        
+        # TTL por defecto (30 días como solicitaste)
+        self.ttl_config = {
+            'ESTADOS': 30,
+            'MUNICIPIOS': 15, 
+            'CIUDADES': 15,
+            'COLONIAS': 7,
+            'ALCALDIAS': 30
+        }
+        
+        print("🚀 Cache Simplificado inicializado (sin threading)")
+    
+    def is_valid(self, tipo_catalogo):
+        """Verificar si cache es válido (no expirado)"""
+        if tipo_catalogo not in self.cache_data:
+            return False
+        
+        entry = self.cache_data[tipo_catalogo]
+        ttl_days = entry.get('ttl_days', 30)
+        expira = entry['timestamp'] + timedelta(days=ttl_days)
+        
+        return datetime.now() < expira
+    
+    def get_referencias(self, tipo_catalogo, engine):
+        """Obtener referencias con cache simple"""
+        
+        self.stats['hits' if self.is_valid(tipo_catalogo) else 'misses'] += 1
+        
+        # Cache HIT
+        if self.is_valid(tipo_catalogo):
+            data = self.cache_data[tipo_catalogo]['data']
+            print(f"🎯 CACHE HIT: {tipo_catalogo} - {len(data)} registros")
+            return data
+        
+        # Cache MISS - consultar BD
+        print(f"💿 CACHE MISS: {tipo_catalogo} - Consultando BD...")
+        
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT * FROM referencias_normalizacion 
+                    WHERE tipo_catalogo = :tipo AND activo = true
+                """), {'tipo': tipo_catalogo})
+                
+                referencias = []
+                for row in result:
+                    try:
+                        ref_dict = convertir_row_a_dict_seguro(row)
+                        referencias.append(ref_dict)
+                    except Exception as e:
+                        print(f"⚠️ Error convirtiendo row individual: {e}")
+                        continue
+            
+            # Guardar en cache
+            ttl_days = self.ttl_config.get(tipo_catalogo, 30)
+            self.cache_data[tipo_catalogo] = {
+                'data': referencias,
+                'timestamp': datetime.now(),
+                'ttl_days': ttl_days
+            }
+            
+            print(f"📚 CACHE GUARDADO: {tipo_catalogo} - {len(referencias)} registros por {ttl_days} días")
+            return referencias
+            
+        except Exception as e:
+            print(f"❌ Error en cache: {e}")
+            return []
+    
+    def invalidate(self, tipo_catalogo):
+        """Invalidar cache específico"""
+        if tipo_catalogo in self.cache_data:
+            del self.cache_data[tipo_catalogo]
+            self.stats['invalidaciones'] += 1
+            print(f"🗑️ Cache invalidado: {tipo_catalogo}")
+    
+    def get_stats(self):
+        """Obtener estadísticas"""
+        total = self.stats['hits'] + self.stats['misses']
+        hit_rate = (self.stats['hits'] / total * 100) if total > 0 else 0
+        
+        return {
+            'hit_rate': hit_rate,
+            'total_consultas': total,
+            'tipos_cacheados': list(self.cache_data.keys()),
+            **self.stats
+        }
+
+# ========================================
+# 2. INICIALIZACIÓN GLOBAL MEJORADA
+# ========================================
+
+def inicializar_cache_simplificado():
+    """Inicializar cache de forma más robusta"""
+    
+    try:
+        if 'cache_simple' not in st.session_state:
+            st.session_state.cache_simple = CacheSimplificado()
+            print("✅ Cache simple inicializado correctamente")
+        return st.session_state.cache_simple
+    except Exception as e:
+        print(f"❌ Error inicializando cache: {e}")
+        # Crear cache temporal si falla
+        return CacheSimplificado()
+
+def get_cache_simple():
+    """Obtener cache con manejo de errores"""
+    try:
+        return st.session_state.get('cache_simple', CacheSimplificado())
+    except:
+        return CacheSimplificado()
+
+
+
+def buscar_fallback_directo(self, texto_limpio, tipo_catalogo):
+    """Fallback directo a BD si falla el cache"""
+    try:
+        with self.engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT * FROM referencias_normalizacion 
+                WHERE tipo_catalogo = :tipo AND activo = true
+            """), {'tipo': tipo_catalogo})
+            
+            referencias = [dict(row._mapping) for row in result]
+        
+        # Búsqueda básica sin cache
+        for ref in referencias:
+            if ref['nombre_oficial'].upper().strip() == texto_limpio:
+                return {**ref, 'metodo': 'FALLBACK_EXACTO', 'confianza': 1.0}
+        
+        return None
+    except:
+        return None
+
+# ========================================
+# 4. CARGA CON CACHE SIMPLIFICADO
+# ========================================
+
+def cargar_referencias_CACHE_SIMPLE(df_ref, tipo_ref, fuente_ref, nombre_archivo):
+    """
+    REEMPLAZAR cargar_referencias_SIN_CACHE_TEMPORAL() por esta
+    
+    Versión con cache simplificado que se actualiza automáticamente
+    """
+    
+    try:
+        import psycopg2
+        
+        # Inicializar cache de forma segura
+        cache = inicializar_cache_simplificado()
+        sistema = SistemaNormalizacion()
+        
+        # Validación (código igual que antes)
+        if 'nombre_oficial' not in df_ref.columns or 'codigo_oficial' not in df_ref.columns:
+            st.error("❌ Faltan columnas requeridas")
+            return False
+        
+        registros_vacios = df_ref['nombre_oficial'].isna().sum() + (df_ref['nombre_oficial'] == '').sum()
+        if registros_vacios > 0:
+            st.error(f"❌ Hay {registros_vacios} registros sin nombre oficial")
+            return False
+        
+        # Pre-normalización
+        st.info("🧠 Normalizando nombres de referencia...")
+        df_ref['nombre_normalizado'] = df_ref['nombre_oficial'].apply(
+            lambda x: sistema.limpiar_texto_inteligente(str(x), tipo_ref)
+        )
+        
+        # Preview
+        with st.expander("👀 Preview de Normalización (primeros 5 registros)"):
+            preview_df = df_ref[['nombre_oficial', 'nombre_normalizado']].head().copy()
+            preview_df.columns = ['Original', 'Normalizado']
+            st.dataframe(preview_df, use_container_width=True)
+        
+        cambios = sum(1 for i, row in df_ref.iterrows() 
+                     if row['nombre_oficial'].upper().strip() != row['nombre_normalizado'])
+        
+        if cambios > 0:
+            st.warning(f"⚠️ Se normalizarán {cambios:,} nombres ({cambios/len(df_ref)*100:.1f}%)")
+        
+        # Conectar y procesar (código igual que antes)
+        st.info("🔌 Conectando a PostgreSQL...")
+        
+        conn = psycopg2.connect(
+            host=DATABASE_CONFIG['host'],
+            port=DATABASE_CONFIG['port'],
+            database=DATABASE_CONFIG['database'],
+            user=DATABASE_CONFIG['user'],
+            password=DATABASE_CONFIG['password']
+        )
+        
+        cursor = conn.cursor()
+        
+        # Proceso de inserción (igual que antes)
+        cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+        total_existentes = cursor.fetchone()[0]
+        
+        if total_existentes > 0:
+            st.info(f"🗑️ Eliminando {total_existentes:,} referencias existentes...")
+            cursor.execute("DELETE FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+        
+        st.info(f"📥 Insertando {len(df_ref):,} nuevas referencias...")
+        
+        progress_bar = st.progress(0)
+        insertados = 0
+        
+        for idx, row in df_ref.iterrows():
+            nombre_normalizado = sistema.limpiar_texto_inteligente(str(row.get('nombre_oficial', '')), tipo_ref)
+            
+            cursor.execute("""
+                INSERT INTO referencias_normalizacion 
+                (tipo_catalogo, codigo_oficial, nombre_oficial, activo, fecha_actualizacion)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                tipo_ref,
+                str(row.get('codigo_oficial', f'AUTO_{idx}')),
+                nombre_normalizado,
+                True,
+                datetime.now()
+            ))
+            
+            insertados += 1
+            if insertados % 10 == 0:
+                progress_bar.progress(insertados / len(df_ref))
+        
+        progress_bar.progress(1.0)
+        
+        # COMMIT
+        st.info("💾 Guardando cambios...")
+        conn.commit()
+        
+        # Verificación
+        cursor.execute("SELECT COUNT(*) FROM referencias_normalizacion WHERE tipo_catalogo = %s", (tipo_ref,))
+        total_final = cursor.fetchone()[0]
+        conn.close()
+        
+        # ========================================
+        # INVALIDAR CACHE PERSISTENTE
+        # ========================================
+        
+        if total_final == insertados:
+            st.info("🔄 Actualizando cache persistente...")
+            
+            try:
+                # Usar cache persistente
+                cache = inicializar_cache_hibrido()
+                
+                # Invalidar y recargar
+                cache.invalidate(tipo_ref)
+                cache.get_referencias(tipo_ref, sistema.engine)
+                
+                st.success("✅ Cache persistente actualizado")
+                
+            except Exception as e:
+                print(f"⚠️ Error actualizando cache persistente: {e}")
+                st.warning("⚠️ Cache no se pudo actualizar, pero la carga fue exitosa")
+            
+            st.success(f"""
+            ## 🎉 CARGA EXITOSA CON CACHE PERSISTENTE
+            
+            **✅ Resultado:**
+            - **Insertadas:** {insertados:,} referencias
+            - **Total {tipo_ref}:** {total_final:,} referencias
+            - **Cache:** Guardado en archivo permanentemente
+            
+            **⚡ Rendimiento mejorado:**
+            - Cache persiste entre sesiones
+            - Otros usuarios se benefician del cache
+            - Cache válido por {cache.ttl_config.get(tipo_ref, 30)} días
+            """)
+            
+            return True
+        else:
+            st.error(f"❌ Error en verificación")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Error en carga: {str(e)}")
+        return False
+
+# ========================================
+# 5. PANEL DE CACHE SIMPLIFICADO
+# ========================================
+
+def mostrar_panel_cache_simple():
+    """Panel simplificado del cache"""
+    
+    st.markdown("### ⚡ Cache Simplificado")
+    
+    try:
+        cache = get_cache_simple()
+        stats = cache.get_stats()
+        
+        # Métricas principales
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Hit Rate", f"{stats['hit_rate']:.1f}%")
+        
+        with col2:
+            st.metric("Consultas", stats['total_consultas'])
+        
+        with col3:
+            st.metric("Tipos en Cache", len(stats['tipos_cacheados']))
+        
+        # Estado del cache
+        st.markdown("#### 📊 Estado del Cache")
+        
+        tipos = ['ESTADOS', 'MUNICIPIOS', 'CIUDADES', 'COLONIAS', 'ALCALDIAS']
+        cache_info = []
+        
+        for tipo in tipos:
+            if tipo in cache.cache_data:
+                entry = cache.cache_data[tipo]
+                edad = (datetime.now() - entry['timestamp']).days
+                expira_en = entry['ttl_days'] - edad
+                
+                cache_info.append({
+                    'Tipo': tipo,
+                    'Estado': '✅ Activo' if expira_en > 0 else '⏰ Expirado',
+                    'Registros': len(entry['data']),
+                    'Edad (días)': edad,
+                    'Expira en': f"{max(0, expira_en)} días"
+                })
+            else:
+                cache_info.append({
+                    'Tipo': tipo,
+                    'Estado': '❌ Sin cache',
+                    'Registros': 0,
+                    'Edad (días)': '-',
+                    'Expira en': '-'
+                })
+        
+        df_cache = pd.DataFrame(cache_info)
+        st.dataframe(df_cache, use_container_width=True, hide_index=True)
+        
+        # Acciones
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🗑️ Limpiar Todo"):
+                cache.cache_data.clear()
+                st.success("✅ Cache limpiado")
+                st.rerun()
+        
+        with col2:
+            if st.button("📊 Refrescar Stats"):
+                st.rerun()
+    
+    except Exception as e:
+        st.error(f"Error mostrando panel: {e}")
+ 
+
+
+# ========================================
+# OPCIÓN 1: CACHE EN ARCHIVO (RECOMENDADO)
+# ========================================
+
+class CachePersistente:
+    """
+    Cache que se mantiene entre sesiones guardando en archivo
+    """
+    
+    def __init__(self, cache_file='cache_referencias.pkl'):
+        self.cache_file = cache_file
+        self.cache_data = {}
+        self.stats = {'hits': 0, 'misses': 0, 'invalidaciones': 0}
+        
+        self.ttl_config = {
+            'ESTADOS': 30,
+            'MUNICIPIOS': 15, 
+            'CIUDADES': 15,
+            'COLONIAS': 7,
+            'ALCALDIAS': 30
+        }
+        
+        # Cargar cache existente al inicializar
+        self.cargar_cache_desde_archivo()
+        print(f"🚀 Cache persistente inicializado - {len(self.cache_data)} tipos en memoria")
+    
+    def cargar_cache_desde_archivo(self):
+        """Cargar cache desde archivo si existe"""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'rb') as f:
+                    data = pickle.load(f)
+                    self.cache_data = data.get('cache_data', {})
+                    self.stats = data.get('stats', {'hits': 0, 'misses': 0, 'invalidaciones': 0})
+                    print(f"📂 Cache cargado desde archivo: {len(self.cache_data)} tipos")
+            else:
+                print("📂 No hay cache previo - iniciando limpio")
+        except Exception as e:
+            print(f"⚠️ Error cargando cache desde archivo: {e}")
+            self.cache_data = {}
+    
+    def guardar_cache_en_archivo(self):
+        """Guardar cache en archivo"""
+        try:
+            data = {
+                'cache_data': self.cache_data,
+                'stats': self.stats,
+                'timestamp': datetime.now()
+            }
+            
+            with open(self.cache_file, 'wb') as f:
+                pickle.dump(data, f)
+            
+            print(f"💾 Cache guardado en archivo: {len(self.cache_data)} tipos")
+        except Exception as e:
+            print(f"⚠️ Error guardando cache: {e}")
+    
+    def is_valid(self, tipo_catalogo):
+        """Verificar si cache es válido (no expirado)"""
+        if tipo_catalogo not in self.cache_data:
+            return False
+        
+        entry = self.cache_data[tipo_catalogo]
+        ttl_days = entry.get('ttl_days', 30)
+        expira = entry['timestamp'] + timedelta(days=ttl_days)
+        
+        return datetime.now() < expira
+    
+    def get_referencias(self, tipo_catalogo, engine):
+        """Obtener referencias con cache persistente"""
+        
+        self.stats['hits' if self.is_valid(tipo_catalogo) else 'misses'] += 1
+        
+        # Cache HIT
+        if self.is_valid(tipo_catalogo):
+            data = self.cache_data[tipo_catalogo]['data']
+            print(f"🎯 CACHE HIT (persistente): {tipo_catalogo} - {len(data)} registros")
+            return data
+        
+        # Cache MISS - consultar BD
+        print(f"💿 CACHE MISS (persistente): {tipo_catalogo} - Consultando BD...")
+        
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT * FROM referencias_normalizacion 
+                    WHERE tipo_catalogo = :tipo AND activo = true
+                """), {'tipo': tipo_catalogo})
+                
+                referencias = [dict(row._mapping) for row in result]
+            
+            # Guardar en cache
+            ttl_days = self.ttl_config.get(tipo_catalogo, 30)
+            self.cache_data[tipo_catalogo] = {
+                'data': referencias,
+                'timestamp': datetime.now(),
+                'ttl_days': ttl_days
+            }
+            
+            # Guardar automáticamente en archivo
+            self.guardar_cache_en_archivo()
+            
+            print(f"📚 CACHE GUARDADO (persistente): {tipo_catalogo} - {len(referencias)} registros")
+            return referencias
+            
+        except Exception as e:
+            print(f"❌ Error en cache persistente: {e}")
+            return []
+    
+    def invalidate(self, tipo_catalogo):
+        """Invalidar cache específico y actualizar archivo"""
+        if tipo_catalogo in self.cache_data:
+            del self.cache_data[tipo_catalogo]
+            self.stats['invalidaciones'] += 1
+            self.guardar_cache_en_archivo()  # Guardar cambios
+            print(f"🗑️ Cache invalidado (persistente): {tipo_catalogo}")
+    
+    def get_stats(self):
+        """Obtener estadísticas"""
+        total = self.stats['hits'] + self.stats['misses']
+        hit_rate = (self.stats['hits'] / total * 100) if total > 0 else 0
+        
+        # Información adicional sobre persistencia
+        tamaño_archivo = 0
+        if os.path.exists(self.cache_file):
+            tamaño_archivo = os.path.getsize(self.cache_file) / 1024  # KB
+        
+        return {
+            'hit_rate': hit_rate,
+            'total_consultas': total,
+            'tipos_cacheados': list(self.cache_data.keys()),
+            'tamaño_archivo_kb': round(tamaño_archivo, 2),
+            'archivo_cache': self.cache_file,
+            **self.stats
+        }
+
+# ========================================
+# OPCIÓN 2: CACHE GLOBAL EN STREAMLIT
+# ========================================
+
+# Variable global que persiste mientras Streamlit esté corriendo
+_CACHE_GLOBAL = None
+
+def get_cache_global_persistente():
+    """Cache que persiste mientras Streamlit esté corriendo"""
+    global _CACHE_GLOBAL
+    
+    if _CACHE_GLOBAL is None:
+        _CACHE_GLOBAL = CachePersistente()
+        print("🌐 Cache global inicializado (persiste durante ejecución de Streamlit)")
+    
+    return _CACHE_GLOBAL
+
+# ========================================
+# OPCIÓN 3: CACHE HÍBRIDO (MEJOR OPCIÓN)
+# ========================================
+
+def inicializar_cache_hibrido():
+    """
+    Cache híbrido: Usar session_state pero con respaldo en archivo
+    RECOMENDADO: Mejor rendimiento + persistencia
+    """
+    
+    # Intentar usar cache de session_state primero (más rápido)
+    if 'cache_persistente' not in st.session_state:
+        # Si no existe en session, crear y cargar desde archivo
+        st.session_state.cache_persistente = CachePersistente()
+        print("🔗 Cache híbrido inicializado en session_state")
+    
+    return st.session_state.cache_persistente
+
+# ========================================
+# MODIFICACIÓN DEL LOGOUT PARA PRESERVAR CACHE
+# ========================================
+
+def cerrar_sesion_PRESERVANDO_CACHE():
+    """
+    REEMPLAZAR la función cerrar_sesion() existente por esta
+    
+    Cierra sesión pero preserva el cache en archivo
+    """
+    
+    # Guardar cache antes de cerrar sesión
+    if 'cache_persistente' in st.session_state:
+        try:
+            cache = st.session_state.cache_persistente
+            cache.guardar_cache_en_archivo()
+            print("💾 Cache guardado antes de cerrar sesión")
+        except Exception as e:
+            print(f"⚠️ Error guardando cache al cerrar: {e}")
+    
+    # Cerrar sesión normal
+    if 'token_sesion' in st.session_state:
+        gestor = st.session_state.gestor_usuarios
+        gestor.cerrar_sesion(st.session_state.token_sesion)
+    
+    # Limpiar session_state (pero el cache ya está en archivo)
+    st.session_state.usuario_autenticado = False
+    if 'usuario_actual' in st.session_state:
+        del st.session_state.usuario_actual
+    if 'token_sesion' in st.session_state:
+        del st.session_state.token_sesion
+    
+    print("👋 Sesión cerrada - Cache preservado en archivo")
+    st.rerun()
+
+# ========================================
+# FUNCIONES ACTUALIZADAS PARA CACHE PERSISTENTE
+# ========================================
+
+def buscar_en_referencias_CACHE_PERSISTENTE(self, texto_limpio, tipo_catalogo):
+    """
+    ACTUALIZAR buscar_en_referencias_CACHE_SIMPLE() con esta versión
+    
+    Búsqueda con cache que persiste entre sesiones
+    """
+    
+    print(f"🔍 Buscando con cache persistente: '{texto_limpio}' en {tipo_catalogo}")
+    
+    try:
+        # Obtener cache persistente
+        cache = inicializar_cache_hibrido()
+        
+        # Obtener referencias (con cache persistente o desde BD)
+        referencias = cache.get_referencias(tipo_catalogo, self.engine)
+        
+        if not referencias:
+            print(f"   ❌ No hay referencias para {tipo_catalogo}")
+            return None
+        
+        print(f"   📊 Procesando {len(referencias)} referencias")
+        
+        # Búsqueda exacta (código igual que antes)
+        for ref in referencias:
+            nombre_ref = ref['nombre_oficial'].upper().strip()
+            if texto_limpio == nombre_ref:
+                print(f"   ✅ EXACTO: '{texto_limpio}'")
+                return {
+                    **ref,
+                    'metodo': 'EXACTO',
+                    'confianza': 1.0
+                }
+        
+        # Fuzzy matching (código igual que antes)
+        nombres = [ref['nombre_oficial'].upper().strip() for ref in referencias]
+        
+        from fuzzywuzzy import fuzz, process
+        mejor = process.extractOne(texto_limpio, nombres, scorer=fuzz.token_sort_ratio)
+        
+        if mejor and mejor[1] >= 60:
+            for ref in referencias:
+                if ref['nombre_oficial'].upper().strip() == mejor[0]:
+                    print(f"   ✅ FUZZY: '{texto_limpio}' → '{mejor[0]}' ({mejor[1]}%)")
+                    return {
+                        **ref,
+                        'metodo': 'FUZZY_ALTO' if mejor[1] >= 80 else 'FUZZY_BAJO',
+                        'confianza': mejor[1] / 100.0
+                    }
+        
+        print(f"   ❌ Sin coincidencias para '{texto_limpio}'")
+        return None
+        
+    except Exception as e:
+        print(f"   ❌ Error en búsqueda persistente: {e}")
+        # Fallback a búsqueda directa
+        return self.buscar_fallback_directo(texto_limpio, tipo_catalogo)
+
+def cargar_referencias_CACHE_PERSISTENTE(df_ref, tipo_ref, fuente_ref, nombre_archivo):
+    """
+    ACTUALIZAR cargar_referencias_CACHE_SIMPLE() con esta versión
+    
+    Carga con cache que persiste entre sesiones
+    """
+    
+    # ... (código de validación e inserción igual que antes) ...
+    
+    # Solo cambiar la parte final del cache:
+    if total_final == insertados:
+        st.info("🔄 Actualizando cache persistente...")
+        
+        try:
+            # Usar cache persistente
+            cache = inicializar_cache_hibrido()
+            
+            # Invalidar y recargar
+            cache.invalidate(tipo_ref)
+            cache.get_referencias(tipo_ref, sistema.engine)
+            
+            st.success("✅ Cache persistente actualizado")
+            
+        except Exception as e:
+            print(f"⚠️ Error actualizando cache persistente: {e}")
+            st.warning("⚠️ Cache no se pudo actualizar, pero la carga fue exitosa")
+        
+        # ... resto del código igual ...
+
+# ========================================
+# PANEL ACTUALIZADO PARA CACHE PERSISTENTE
+# ========================================
+
+def mostrar_panel_cache_persistente():
+    """Panel para cache persistente"""
+    
+    st.markdown("### ⚡ Cache Persistente Entre Sesiones")
+    
+    try:
+        cache = inicializar_cache_hibrido()
+        stats = cache.get_stats()
+        
+        # Métricas principales
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Hit Rate", f"{stats['hit_rate']:.1f}%")
+        
+        with col2:
+            st.metric("Consultas", stats['total_consultas'])
+        
+        with col3:
+            st.metric("Tipos en Cache", len(stats['tipos_cacheados']))
+        
+        with col4:
+            st.metric("Archivo", f"{stats['tamaño_archivo_kb']:.1f} KB")
+        
+        # Información de persistencia
+        st.info(f"""
+        **💾 Persistencia:**
+        - Archivo: `{stats['archivo_cache']}`
+        - Cache se mantiene entre sesiones
+        - Se guarda automáticamente al actualizar
+        """)
+        
+        # Estado del cache (código igual que antes)
+        # ... resto del panel igual ...
+        
+        # Acciones mejoradas
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🗑️ Limpiar Cache"):
+                cache.cache_data.clear()
+                cache.guardar_cache_en_archivo()
+                st.success("✅ Cache limpiado y archivo actualizado")
+                st.rerun()
+        
+        with col2:
+            if st.button("💾 Forzar Guardado"):
+                cache.guardar_cache_en_archivo()
+                st.success("✅ Cache guardado en archivo")
+        
+        with col3:
+            if st.button("📂 Recargar desde Archivo"):
+                cache.cargar_cache_desde_archivo()
+                st.success("✅ Cache recargado desde archivo")
+                st.rerun()
+    
+    except Exception as e:
+        st.error(f"Error mostrando panel persistente: {e}")
+
+
+def convertir_row_a_dict_seguro(row):
+    """Convertir row de SQLAlchemy a diccionario de forma segura"""
+    try:
+        # Método 1: _mapping (SQLAlchemy 2.0+)
+        if hasattr(row, '_mapping'):
+            return dict(row._mapping)
+        
+        # Método 2: _asdict() (SQLAlchemy 1.4)
+        elif hasattr(row, '_asdict'):
+            return row._asdict()
+        
+        # Método 3: Crear diccionario manualmente
+        elif hasattr(row, 'keys'):
+            return {key: row[key] for key in row.keys()}
+        
+        # Método 4: Conversión directa
+        else:
+            return dict(row)
+            
+    except Exception as e:
+        print(f"⚠️ Error convirtiendo row: {e}")
+        
+        # Método de emergencia: usar índices
+        try:
+            return {
+                'id_referencia': row[0],
+                'tipo_catalogo': row[1], 
+                'codigo_oficial': row[2],
+                'nombre_oficial': row[3],
+                'nombre_alternativo': row[4],
+                'coordenadas_lat': row[5],
+                'coordenadas_lng': row[6],
+                'estado_padre': row[7],
+                'municipio_padre': row[8],
+                'activo': row[9],
+                'fecha_actualizacion': row[10]
+            }
+        except:
+            # Último recurso: diccionario mínimo
+            return {
+                'nombre_oficial': str(row[3]) if len(row) > 3 else 'ERROR',
+                'codigo_oficial': str(row[2]) if len(row) > 2 else 'ERROR',
+                'tipo_catalogo': str(row[1]) if len(row) > 1 else 'ERROR'
+            }
+
+
+# ========================================
+# TEST DE DIAGNÓSTICO PARA EL ERROR
+# ========================================
+
+def test_conversion_sqlalchemy():
+    """Función para diagnosticar el problema de conversión"""
+    
+    st.markdown("### 🧪 Test Conversión SQLAlchemy")
+    
+    if st.button("🔍 Diagnosticar Error SQLAlchemy"):
+        try:
+            sistema = SistemaNormalizacion()
+            
+            with sistema.engine.connect() as conn:
+                # Test 1: Consulta simple
+                result = conn.execute(text("SELECT COUNT(*) FROM referencias_normalizacion"))
+                count_row = result.fetchone()
+                st.success(f"✅ Consulta básica OK: {count_row[0]} registros")
+                
+                # Test 2: Consulta de estructura
+                result = conn.execute(text("""
+                    SELECT column_name, data_type 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'referencias_normalizacion'
+                    ORDER BY ordinal_position
+                """))
+                
+                st.write("**Estructura de la tabla:**")
+                for row in result:
+                    st.write(f"- {row[0]}: {row[1]}")
+                
+                # Test 3: Consulta de referencia simple
+                result = conn.execute(text("""
+                    SELECT * FROM referencias_normalizacion 
+                    WHERE tipo_catalogo = 'ESTADOS' 
+                    LIMIT 1
+                """))
+                
+                row = result.fetchone()
+                if row:
+                    st.write("**Row encontrado:**")
+                    st.write(f"Tipo de row: {type(row)}")
+                    st.write(f"Longitud: {len(row)}")
+                    
+                    # Test conversión
+                    try:
+                        ref_dict = convertir_row_a_dict_seguro(row)
+                        st.success("✅ Conversión exitosa")
+                        st.json(ref_dict)
+                    except Exception as e:
+                        st.error(f"❌ Error en conversión: {e}")
+                        st.write(f"Row crudo: {row}")
+                
+                else:
+                    st.warning("No hay registros de ESTADOS para probar")
+        
+        except Exception as e:
+            st.error(f"❌ Error en test: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+
+
+def mostrar_mantenimiento_sistema():
+    """Herramientas de mantenimiento del sistema - VERSIÓN CORREGIDA"""
+    
+    st.markdown("### 🧹 Mantenimiento del Sistema")
+    
+    sistema = SistemaNormalizacion()
+    
+    # Pestañas para organizar mejor
+    tab1, tab2, tab3 = st.tabs(["🛠️ Mantenimiento Básico", "🗄️ Espacio en Disco", "🗑️ Limpieza de Datos"])
+    
+    with tab1:
+        mantenimiento_basico_seguro(sistema)
+        mostrar_informacion_mantenimiento()
+    
+    with tab2:
+        mostrar_estadisticas_espacio_seguro(sistema)
+    
+    with tab3:
+        mostrar_limpieza_datos_seguro(sistema)
+
+def mantenimiento_basico_seguro(sistema):
+    """Mantenimiento básico sin VACUUM (más seguro)"""
+    
+    st.markdown("#### 🛠️ Mantenimiento Básico (Seguro)")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📊 Solo ANALYZE (Recomendado)", type="primary"):
+            try:
+                with sistema.engine.connect() as conn:
+                    # Solo ANALYZE, sin VACUUM
+                    conn.execute(text("ANALYZE"))
+                    conn.commit()
+                
+                st.success("✅ Estadísticas actualizadas con ANALYZE")
+                st.info("📊 El rendimiento de consultas ha sido optimizado")
+                
+            except Exception as e:
+                st.error(f"Error en ANALYZE: {str(e)}")
+    
+    with col2:
+        if st.button("🧹 VACUUM Completo (Avanzado)"):
+            if st.checkbox("⚠️ Confirmar VACUUM (puede tomar tiempo)"):
+                optimizar_tablas_seguro(sistema)
+
+def mostrar_informacion_mantenimiento():
+    """Mostrar información sobre las opciones de mantenimiento"""
+    
+    st.markdown("#### ℹ️ Información de Mantenimiento")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("""
+        **📊 ANALYZE (Recomendado):**
+        - ✅ Rápido y seguro
+        - ✅ Actualiza estadísticas
+        - ✅ Mejora rendimiento
+        - ✅ No bloquea tablas
+        """)
+    
+    with col2:
+        st.markdown("""
+        **🧹 VACUUM (Avanzado):**
+        - ⚠️ Puede tomar tiempo
+        - ⚠️ Requiere permisos especiales
+        - ✅ Libera espacio físico
+        - ✅ Reorganiza tablas
+        """)
+    
+    st.info("""
+    **💡 Recomendación:**
+    - Para uso diario: Usar solo **ANALYZE**
+    - Para mantenimiento profundo: Usar **VACUUM** cuando la aplicación tenga poco tráfico
+    - La diferencia principal es que VACUUM libera espacio físico, pero es más lento
+    """)
+
+def mostrar_estadisticas_espacio_seguro(sistema):
+    """Estadísticas de espacio con manejo de errores mejorado"""
+    
+    st.markdown("#### 💽 Uso de Espacio por Tabla")
+    
+    try:
+        with sistema.engine.connect() as conn:
+            # Intentar obtener estadísticas de espacio
+            result = conn.execute(text("""
+                SELECT 
+                    schemaname,
+                    tablename,
+                    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size,
+                    pg_total_relation_size(schemaname||'.'||tablename) as size_bytes
+                FROM pg_tables 
+                WHERE schemaname = 'public'
+                ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
+            """))
+            
+            tabla_sizes = []
+            for row in result:
+                try:
+                    tabla_sizes.append({
+                        'tablename': row[1], 
+                        'size': row[2],
+                        'size_bytes': row[3]
+                    })
+                except Exception as e:
+                    print(f"⚠️ Error procesando tabla: {e}")
+                    continue
+        
+        if tabla_sizes:
+            st.markdown("##### 📊 Tamaño de Tablas:")
+            df_sizes = pd.DataFrame(tabla_sizes)
+            df_sizes = df_sizes[['tablename', 'size']].copy()
+            df_sizes.columns = ['Tabla', 'Tamaño']
+            st.dataframe(df_sizes, use_container_width=True, hide_index=True)
+            
+            # Calcular total
+            total_bytes = sum(item['size_bytes'] for item in tabla_sizes)
+            total_mb = total_bytes / (1024 * 1024)
+            st.info(f"📊 **Espacio total usado:** {total_mb:.2f} MB")
+        else:
+            st.info("ℹ️ No se pudieron obtener estadísticas de espacio")
+    
+    except Exception as e:
+        st.warning(f"⚠️ No se pueden mostrar estadísticas de espacio: {str(e)}")
+        st.info("💡 Esto puede ser normal si no tienes permisos para consultar pg_tables")
+        
+        # Mostrar información básica alternativa
+        try:
+            with sistema.engine.connect() as conn:
+                # Contar registros por tabla
+                tablas_principales = [
+                    'usuarios', 'archivos_cargados', 'resultados_normalizacion', 
+                    'referencias_normalizacion', 'sesiones_usuario'
+                ]
+                
+                st.markdown("##### 📊 Conteo de Registros por Tabla:")
+                for tabla in tablas_principales:
+                    try:
+                        result = conn.execute(text(f"SELECT COUNT(*) FROM {tabla}"))
+                        count = result.fetchone()[0]
+                        st.write(f"**{tabla}:** {count:,} registros")
+                    except:
+                        st.write(f"**{tabla}:** No accesible")
+        except:
+            st.info("No se puede acceder a información básica de tablas")
+
+def mostrar_limpieza_datos_seguro(sistema):
+    """Limpieza de datos antiguos con validaciones mejoradas"""
+    
+    st.markdown("#### 🗑️ Limpieza de Datos Antiguos")
+    
+    dias_antiguos = st.number_input(
+        "Eliminar registros anteriores a (días):", 
+        value=90, 
+        min_value=30, 
+        max_value=365,
+        help="Los datos anteriores a esta fecha serán eliminados permanentemente"
+    )
+    
+    # Preview de lo que se va a eliminar
+    if st.button("🔍 Vista Previa de Eliminación"):
+        try:
+            fecha_limite = datetime.now() - timedelta(days=dias_antiguos)
+            
+            with sistema.engine.connect() as conn:
+                # Contar registros a eliminar
+                result = conn.execute(text("""
+                    SELECT COUNT(*) FROM resultados_normalizacion 
+                    WHERE fecha_proceso < :fecha_limite
+                """), {'fecha_limite': fecha_limite})
+                
+                registros_a_eliminar = result.fetchone()[0]
+                
+                result = conn.execute(text("""
+                    SELECT COUNT(*) FROM archivos_cargados 
+                    WHERE fecha_carga < :fecha_limite
+                """), {'fecha_limite': fecha_limite})
+                
+                archivos_a_eliminar = result.fetchone()[0]
+                
+                # Mostrar preview
+                if registros_a_eliminar > 0 or archivos_a_eliminar > 0:
+                    st.warning(f"""
+                    **📋 Vista previa de eliminación:**
+                    - 📊 Resultados a eliminar: {registros_a_eliminar:,}
+                    - 📄 Archivos a eliminar: {archivos_a_eliminar:,}
+                    - 📅 Anteriores a: {fecha_limite.strftime('%Y-%m-%d')}
+                    """)
+                    
+                    if st.button("🗑️ CONFIRMAR ELIMINACIÓN", type="primary"):
+                        ejecutar_limpieza_datos(sistema, fecha_limite, registros_a_eliminar, archivos_a_eliminar)
+                else:
+                    st.success(f"✅ No hay datos anteriores a {fecha_limite.strftime('%Y-%m-%d')} para eliminar")
+        
+        except Exception as e:
+            st.error(f"Error en vista previa: {str(e)}")
+
+def ejecutar_limpieza_datos(sistema, fecha_limite, registros_a_eliminar, archivos_a_eliminar):
+    """Ejecutar limpieza de datos con barra de progreso"""
+    
+    try:
+        # Crear barra de progreso
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        with sistema.engine.connect() as conn:
+            # Eliminar resultados antiguos
+            status_text.text("🗑️ Eliminando resultados antiguos...")
+            progress_bar.progress(0.3)
+            
+            result = conn.execute(text("""
+                DELETE FROM resultados_normalizacion 
+                WHERE fecha_proceso < :fecha_limite
+            """), {'fecha_limite': fecha_limite})
+            
+            resultados_eliminados = result.rowcount
+            
+            # Eliminar archivos huérfanos
+            status_text.text("🗑️ Eliminando archivos huérfanos...")
+            progress_bar.progress(0.7)
+            
+            result = conn.execute(text("""
+                DELETE FROM archivos_cargados 
+                WHERE fecha_carga < :fecha_limite
+                AND id_archivo NOT IN (SELECT DISTINCT id_archivo FROM resultados_normalizacion)
+            """), {'fecha_limite': fecha_limite})
+            
+            archivos_eliminados = result.rowcount
+            
+            # Confirmar cambios
+            status_text.text("💾 Guardando cambios...")
+            progress_bar.progress(0.9)
+            
+            conn.commit()
+            
+            # Completado
+            progress_bar.progress(1.0)
+            status_text.text("✅ Limpieza completada")
+            
+            st.success(f"""
+            ✅ **Limpieza completada:**
+            - 📊 Resultados eliminados: {resultados_eliminados:,}
+            - 📄 Archivos eliminados: {archivos_eliminados:,}
+            - 💾 Espacio liberado en base de datos
+            """)
+            
+            # Recomendar optimización después de eliminar muchos datos
+            if resultados_eliminados > 1000:
+                st.info("💡 **Recomendación:** Ejecuta 'Optimizar Tablas' para liberar espacio físico")
+    
+    except Exception as e:
+        st.error(f"Error en limpieza: {str(e)}")
+
+def optimizar_tablas_seguro(sistema):
+    """Optimizar tablas de PostgreSQL con manejo mejorado de errores"""
+    
+    st.markdown("#### ⚡ Optimización de Tablas")
+    
+    try:
+        # Intentar con SQLAlchemy primero (más seguro)
+        with sistema.engine.connect() as conn:
+            
+            # Lista de tablas principales
+            tablas = ['resultados_normalizacion', 'archivos_cargados', 'referencias_normalizacion', 'usuarios', 'sesiones_usuario']
+            
+            # Crear barra de progreso
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            tablas_optimizadas = 0
+            
+            for i, tabla in enumerate(tablas):
+                try:
+                    status_text.text(f"⚡ Optimizando tabla: {tabla}...")
+                    
+                    # Verificar que la tabla existe
+                    result = conn.execute(text("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables 
+                            WHERE table_schema = 'public' 
+                            AND table_name = :tabla
+                        )
+                    """), {'tabla': tabla})
+                    
+                    existe = result.fetchone()[0]
+                    
+                    if existe:
+                        # Solo ANALYZE (más seguro que VACUUM)
+                        conn.execute(text(f"ANALYZE {tabla}"))
+                        tablas_optimizadas += 1
+                        st.success(f"✅ {tabla} optimizada")
+                    else:
+                        st.warning(f"⚠️ Tabla {tabla} no existe, omitiendo")
+                    
+                except Exception as e:
+                    st.warning(f"⚠️ Error optimizando {tabla}: {str(e)}")
+                
+                # Actualizar progreso
+                progress_bar.progress((i + 1) / len(tablas))
+            
+            # Finalizar
+            progress_bar.progress(1.0)
+            status_text.text("✅ Optimización completada")
+            
+            st.success(f"✅ {tablas_optimizadas} tablas optimizadas correctamente")
+            
+            # Información adicional
+            st.info("""
+            **Optimización realizada:**
+            - 📊 ANALYZE: Actualizó estadísticas del planificador
+            - 🚀 Rendimiento mejorado en consultas futuras
+            - ⚡ Proceso completado de forma segura
+            """)
+        
+    except Exception as e:
+        st.error(f"Error en optimización: {str(e)}")
+        
+        # Información de ayuda
+        st.markdown("### 🔧 Información del Error:")
+        st.code(f"""
+Error: {str(e)}
+
+Posibles causas:
+1. Permisos insuficientes para ANALYZE
+2. Conexión de base de datos inestable
+3. Tabla bloqueada por otra operación
+
+Solución aplicada:
+- Usar ANALYZE en lugar de VACUUM (más seguro)
+- Verificar existencia de tablas antes de optimizar
+        """)
+
+def actualizar_estadisticas_bd_seguro(sistema):
+    """Actualizar estadísticas de PostgreSQL de forma segura"""
+    
+    try:
+        with sistema.engine.connect() as conn:
+            # ANALYZE global (más seguro que VACUUM)
+            with st.spinner("📊 Actualizando estadísticas de la base de datos..."):
+                conn.execute(text("ANALYZE"))
+                
+                # También actualizar estadísticas específicas de tablas importantes
+                tablas_importantes = [
+                    'resultados_normalizacion',
+                    'archivos_cargados', 
+                    'referencias_normalizacion'
+                ]
+                
+                for tabla in tablas_importantes:
+                    try:
+                        # Verificar que existe
+                        result = conn.execute(text("""
+                            SELECT EXISTS (
+                                SELECT FROM information_schema.tables 
+                                WHERE table_schema = 'public' AND table_name = :tabla
+                            )
+                        """), {'tabla': tabla})
+                        
+                        if result.fetchone()[0]:
+                            conn.execute(text(f"ANALYZE {tabla}"))
+                    
+                    except Exception as e:
+                        print(f"Warning: No se pudo analizar {tabla}: {e}")
+        
+        st.success("✅ Estadísticas de base de datos actualizadas")
+        
+        # Mostrar información de lo que se hizo
+        st.info("""
+        **Estadísticas actualizadas:**
+        - 📊 Planificador de consultas optimizado
+        - 🎯 Estimaciones de cardinalidad mejoradas  
+        - ⚡ Planes de ejecución más eficientes
+        """)
+        
+    except Exception as e:
+        st.error(f"Error actualizando estadísticas: {str(e)}")
+        
+        # Sugerir alternativas
+        st.info("""
+        **💡 Alternativas:**
+        - Usa 'Solo ANALYZE' en Mantenimiento Básico
+        - Contacta al administrador de base de datos
+        - Verifica permisos de usuario PostgreSQL
+        """)
 
 
 # ========================================

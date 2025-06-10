@@ -955,12 +955,21 @@ def get_database_config():
 DATABASE_CONFIG = get_database_config()
 
 # Configuración de página
-st.set_page_config(
-    page_title="🏠 Sistema Integral - Normalización Telmex",
-    page_icon="🏠",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# st.set_page_config(
+#     page_title="🏠 Sistema Integral - Normalización Telmex",
+#     page_icon="🏠",
+#     layout="wide",
+#     initial_sidebar_state="expanded"
+# )
+
+# Solo ejecutar set_page_config si este es el archivo principal que se está ejecutando
+if __name__ == "__main__":
+    st.set_page_config(
+        page_title="🏢 Sistema Completo - Normalización Telmex",
+        page_icon="🏢",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
 
 # Paleta de colores
 COLORES = {
@@ -6858,9 +6867,7 @@ def inicializar_cache_hibrido():
 
 def cerrar_sesion_PRESERVANDO_CACHE():
     """
-    REEMPLAZAR la función cerrar_sesion() existente por esta
-    
-    Cierra sesión pero preserva el cache en archivo
+    Cierra sesión pero preserva el cache en archivo y limpia completamente el state
     """
     
     # Guardar cache antes de cerrar sesión
@@ -6872,19 +6879,33 @@ def cerrar_sesion_PRESERVANDO_CACHE():
         except Exception as e:
             print(f"⚠️ Error guardando cache al cerrar: {e}")
     
-    # Cerrar sesión normal
+    # Cerrar sesión en base de datos
     if 'token_sesion' in st.session_state:
         gestor = st.session_state.gestor_usuarios
         gestor.cerrar_sesion(st.session_state.token_sesion)
     
-    # Limpiar session_state (pero el cache ya está en archivo)
-    st.session_state.usuario_autenticado = False
-    if 'usuario_actual' in st.session_state:
-        del st.session_state.usuario_actual
-    if 'token_sesion' in st.session_state:
-        del st.session_state.token_sesion
+    # LIMPIAR COMPLETAMENTE session_state excepto cache
+    cache_backup = st.session_state.get('cache_persistente', None)
     
-    print("👋 Sesión cerrada - Cache preservado en archivo")
+    # Limpiar todo
+    st.session_state.clear()
+    
+    # Restaurar solo el cache
+    if cache_backup:
+        st.session_state.cache_persistente = cache_backup
+    
+    # Marcar que se hizo logout
+    st.session_state.usuario_autenticado = False
+    st.session_state.logout_completed = True
+    st.session_state.selected_mode = None
+    
+    print("👋 Sesión cerrada - Session state limpiado completamente")
+    
+    # Mostrar mensaje y rerun
+    st.success("👋 Sesión cerrada exitosamente")
+    st.info("🔄 Redirigiendo al Launcher...")
+    
+    time.sleep(1)
     st.rerun()
 
 # ========================================
