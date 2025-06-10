@@ -1,6 +1,6 @@
 # ========================================
 # app.py - PUNTO DE ENTRADA PARA RAILWAY
-# Sistema Híbrido 
+# Sistema Híbrido
 # ========================================
 
 import streamlit as st
